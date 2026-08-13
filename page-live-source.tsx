@@ -102,25 +102,6 @@ const DEFAULT_PRESETS: PresetItem[] = [
   }
 ];
 
-// Collapse literally-repeated clauses. Gemini Live occasionally streams a stray repeat/
-// continuation of what it just said after a turn already looked complete; this trims exact
-// duplicate clauses without touching genuinely new content.
-function dedupClauses(text: string): string {
-  if (!text || text.length <= 10) return text;
-  const clauses = text.split(/(?<=[。！？!?，,.])/);
-  const seen = new Set<string>();
-  const filtered: string[] = [];
-  for (const clause of clauses) {
-    const normalized = clause.replace(/[\s，,。！？!?.]/g, '');
-    if (!normalized) continue;
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      filtered.push(clause);
-    }
-  }
-  return filtered.join('');
-}
-
 export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isPresetOpen, setIsPresetOpen] = useState(false);
@@ -173,13 +154,6 @@ export default function Home() {
   const accumulatedInputTextRef = useRef<string>('');
   const isEstablishingConnectionRef = useRef<boolean>(false);
   const lastMicClickRef = useRef<number>(0);
-  const isPresetSendingRef = useRef<boolean>(false);
-  const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silenceCheckAudioCtxRef = useRef<AudioContext | null>(null);
-  const pendingResponseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentTurnMessageIdRef = useRef<string | null>(null);
-  const turnFinalizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestTurnAudioRef = useRef<{ text: string; lang: string } | null>(null);
 
   const setListeningState = (val: boolean) => {
     setIsListening(val);
@@ -365,16 +339,6 @@ export default function Home() {
   }, [roomId, staffLang, workerLang, autoPlayAudio]);
 
   const handlePresetSelect = async (text: string) => {
-    // Guard against duplicate invocations -- e.g. a double-tap on the preset button firing
-    // onSelectPreset twice before the drawer closes, which used to send two independent
-    // /api/translate requests for the same phrase and produce two (slightly different, since
-    // each is an independent AI call) message bubbles for what the user considered one tap.
-    if (isPresetSendingRef.current) {
-      console.warn('handlePresetSelect: a request is already in flight, ignoring duplicate call.');
-      return;
-    }
-    isPresetSendingRef.current = true;
-
     const speaker = 'staff'; // Presets are always supervisor instructions
     const from = staffLang;
     const to = workerLang;
@@ -417,25 +381,9 @@ export default function Home() {
       }
     } catch (e) {
       console.error('Preset play error:', e);
-    } finally {
-      isPresetSendingRef.current = false;
     }
   };
   const checkSilence = (stream: MediaStream) => {
-    // A previous call's silence-detection timer/AudioContext must never be left running when a
-    // new one starts. If it was, two VAD timers could end up watching the same microphone at
-    // once, and each one independently declares "silence detected" and sends its own turnComplete
-    // to Gemini for what the user considers a single utterance -- producing duplicate/garbled
-    // replies. Always tear down whatever is currently tracked before creating a new timer.
-    if (silenceCheckIntervalRef.current !== null) {
-      clearInterval(silenceCheckIntervalRef.current);
-      silenceCheckIntervalRef.current = null;
-    }
-    if (silenceCheckAudioCtxRef.current) {
-      try { silenceCheckAudioCtxRef.current.close(); } catch (e) {}
-      silenceCheckAudioCtxRef.current = null;
-    }
-
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) return;
@@ -457,10 +405,6 @@ export default function Home() {
         if (!isListeningRef.current) {
           clearInterval(intervalId);
           audioContext.close();
-          if (silenceCheckIntervalRef.current === intervalId) {
-            silenceCheckIntervalRef.current = null;
-            silenceCheckAudioCtxRef.current = null;
-          }
           return;
         }
 
@@ -500,7 +444,7 @@ export default function Home() {
               if (hasSpokenRef.current) {
                 // Send turnComplete without stopping recording!
                 if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                  beginWaitingForResponse();
+                  isWaitingForTranslationRef.current = true;
                   wsRef.current.send(JSON.stringify({
                     clientContent: {
                       turnComplete: true
@@ -515,10 +459,6 @@ export default function Home() {
               lastSoundTime = Date.now();
             } else {
               clearInterval(intervalId);
-              if (silenceCheckIntervalRef.current === intervalId) {
-                silenceCheckIntervalRef.current = null;
-                silenceCheckAudioCtxRef.current = null;
-              }
               if (hasSpokenRef.current) {
                 stopRecording();
               } else {
@@ -530,9 +470,6 @@ export default function Home() {
           }
         }
       }, 100);
-
-      silenceCheckIntervalRef.current = intervalId;
-      silenceCheckAudioCtxRef.current = audioContext;
     } catch (e) {
       console.error('VAD initialization failed:', e);
     }
@@ -563,38 +500,7 @@ export default function Home() {
     return result;
   };
 
-  // While we're waiting for Gemini's response to a completed turn, block starting a new
-  // recording. Without this, tapping the mic again before the previous reply finished streaming
-  // in would reset the shared accumulator refs mid-stream and mix the old answer's leftover text
-  // into the new utterance. A safety timeout guarantees the mic never gets stuck locked if a
-  // response never arrives (e.g. a dropped connection).
-  const beginWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = true;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-    }
-    pendingResponseTimeoutRef.current = setTimeout(() => {
-      console.warn('No response from Gemini within 15s, releasing the mic lock.');
-      isWaitingForTranslationRef.current = false;
-      pendingResponseTimeoutRef.current = null;
-      setNetworkError('⚠️ 応答がありませんでした。もう一度お試しください。');
-      setTimeout(() => setNetworkError(null), 5000);
-    }, 15000);
-  };
-
-  const endWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = false;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-      pendingResponseTimeoutRef.current = null;
-    }
-  };
-
   const handleStartListen = async (speaker: 'staff' | 'worker') => {
-    if (isWaitingForTranslationRef.current) {
-      console.warn('handleStartListen: still waiting for the previous turn\'s response, ignoring new start.');
-      return;
-    }
     initAudioContext();
     setMicPermissionError(false);
     setActiveSpeaker(speaker);
@@ -604,12 +510,6 @@ export default function Home() {
     setListeningState(true);
     accumulatedJsonTextRef.current = '';
     accumulatedInputTextRef.current = '';
-    currentTurnMessageIdRef.current = null;
-    if (turnFinalizeTimeoutRef.current) {
-      clearTimeout(turnFinalizeTimeoutRef.current);
-      turnFinalizeTimeoutRef.current = null;
-    }
-    latestTurnAudioRef.current = null;
 
     try {
       let stream = audioStreamRef.current;
@@ -769,15 +669,6 @@ export default function Home() {
             return;
           }
           const response = JSON.parse(textData);
-
-          if (!isListeningRef.current && !isWaitingForTranslationRef.current) {
-            // We're not in an active recording or awaiting-response window at all (the turn was
-            // already fully finalized a while ago). Anything arriving now is a very late
-            // straggler from a finished turn -- ignore it rather than risk creating/mutating a
-            // message bubble well after the fact.
-            return;
-          }
-
           if (response.serverContent?.modelTurn?.parts) {
             for (const part of response.serverContent.modelTurn.parts) {
               if (part.text) {
@@ -808,19 +699,7 @@ export default function Home() {
           }
 
           if (response.serverContent?.turnComplete) {
-            // Gemini does not reliably send exactly one turnComplete per utterance -- sometimes
-            // the first one arrives before the answer has finished streaming (so it's truncated),
-            // and sometimes it sends an extra one afterward that just repeats/continues what it
-            // already said. Rather than guessing which single event is "the real answer" (which
-            // either duplicated or truncated messages depending on which case happened), always
-            // update the SAME message bubble for this recording with whatever has accumulated so
-            // far, and only actually finish the turn (release the mic, play audio) after a short
-            // quiet period with no further activity from the server.
-            if (turnFinalizeTimeoutRef.current) {
-              clearTimeout(turnFinalizeTimeoutRef.current);
-              turnFinalizeTimeoutRef.current = null;
-            }
-            console.warn('Gemini turn complete signal. Accumulated so far:', accumulatedJsonTextRef.current);
+            console.warn('Gemini turn complete. Final response:', accumulatedJsonTextRef.current);
 
              try {
               let translation = accumulatedJsonTextRef.current.trim();
@@ -841,7 +720,7 @@ export default function Home() {
               if (translation.endsWith('```')) {
                 translation = translation.substring(0, translation.length - 3);
               }
-              translation = dedupClauses(translation.trim());
+              translation = translation.trim();
 
               if (translation) {
                 const to = activeSpeakerRef.current === 'staff' ? workerLang : staffLang;
@@ -851,36 +730,19 @@ export default function Home() {
                   setWorkerLang(detected);
                 }
 
-                const fromLang = activeSpeakerRef.current === 'staff' ? staffLang : detected;
-                const toLang = activeSpeakerRef.current === 'staff' ? workerLang : 'ja';
-                const originalText = accumulatedInputTextRef.current.trim() || (activeSpeakerRef.current === 'staff' ? '音声指示 (日本語)' : '音声回答 (外国語)');
+                const newMsg: ChatMessage = {
+                  id: Math.random().toString(36).substring(7),
+                  sender: activeSpeakerRef.current,
+                  originalText: accumulatedInputTextRef.current.trim() || (activeSpeakerRef.current === 'staff' ? '音声指示 (日本語)' : '音声回答 (外国語)'),
+                  translatedText: translation,
+                  fromLang: activeSpeakerRef.current === 'staff' ? staffLang : detected,
+                  toLang: activeSpeakerRef.current === 'staff' ? workerLang : 'ja',
+                  timestamp: new Date(),
+                };
 
+                localMessageIdsRef.current.add(newMsg.id);
                 setMessages(prev => {
-                  const existingIndex = currentTurnMessageIdRef.current
-                    ? prev.findIndex(m => m.id === currentTurnMessageIdRef.current)
-                    : -1;
-
-                  let updated: ChatMessage[];
-                  let msgId: string;
-                  if (existingIndex !== -1) {
-                    msgId = prev[existingIndex].id;
-                    updated = [...prev];
-                    updated[existingIndex] = { ...updated[existingIndex], originalText, translatedText: translation, fromLang, toLang };
-                  } else {
-                    msgId = Math.random().toString(36).substring(7);
-                    localMessageIdsRef.current.add(msgId);
-                    updated = [...prev, {
-                      id: msgId,
-                      sender: activeSpeakerRef.current,
-                      originalText,
-                      translatedText: translation,
-                      fromLang,
-                      toLang,
-                      timestamp: new Date(),
-                    }];
-                  }
-                  currentTurnMessageIdRef.current = msgId;
-
+                  const updated = [...prev, newMsg];
                   if (roomId) {
                     fetch('/api/channel', {
                       method: 'POST',
@@ -891,34 +753,26 @@ export default function Home() {
                   return updated;
                 });
 
-                latestTurnAudioRef.current = { text: translation, lang: to };
+                if (autoPlayAudio) {
+                  playSpeech(translation, to);
+                }
               }
             } catch (err) {
               console.error('Failed to parse final translation JSON:', err, accumulatedJsonTextRef.current);
             }
-
-            turnFinalizeTimeoutRef.current = setTimeout(() => {
-              turnFinalizeTimeoutRef.current = null;
-              currentTurnMessageIdRef.current = null;
-              endWaitingForResponse();
-
-              if (autoPlayAudio && latestTurnAudioRef.current) {
-                playSpeech(latestTurnAudioRef.current.text, latestTurnAudioRef.current.lang);
-              }
-              latestTurnAudioRef.current = null;
-
-              if (isHandsFreeRef.current) {
-                accumulatedJsonTextRef.current = '';
-                accumulatedInputTextRef.current = '';
-                // Toggle speaker automatically for next turn
-                const nextSpeaker = activeSpeakerRef.current === 'staff' ? 'worker' : 'staff';
-                setActiveSpeaker(nextSpeaker);
-                activeSpeakerRef.current = nextSpeaker;
-                setInterimTranscript('聞き取り中...');
-              } else {
-                handleStopListen();
-              }
-            }, 1200);
+            
+            if (isHandsFreeRef.current) {
+              accumulatedJsonTextRef.current = '';
+              accumulatedInputTextRef.current = '';
+              isWaitingForTranslationRef.current = false;
+              // Toggle speaker automatically for next turn
+              const nextSpeaker = activeSpeakerRef.current === 'staff' ? 'worker' : 'staff';
+              setActiveSpeaker(nextSpeaker);
+              activeSpeakerRef.current = nextSpeaker;
+              setInterimTranscript('聞き取り中...');
+            } else {
+              handleStopListen();
+            }
           }
         } catch (e) {
           console.error('Error handling WebSocket message:', e);
@@ -929,23 +783,11 @@ export default function Home() {
         console.error('WebSocket Error:', e);
         setNetworkError('⚠️ 通信エラーが発生しました。接続状況を確認し、もう一度お試しください。');
         setTimeout(() => setNetworkError(null), 6000);
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
         handleStopListen();
       };
 
       ws.onclose = () => {
         console.warn('Gemini Live API WebSocket connection closed.');
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
         setIsListening(false);
         setInterimTranscript('');
       };
@@ -1040,7 +882,6 @@ export default function Home() {
   const stopRecording = () => {
     // Send turnComplete to Gemini to signal end of user speech and trigger response!
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      beginWaitingForResponse();
       wsRef.current.send(JSON.stringify({
         clientContent: {
           turnComplete: true
@@ -1224,20 +1065,6 @@ export default function Home() {
     lastMicClickRef.current = now;
 
     if (isListening && activeSpeaker === speaker) {
-      // Tell Gemini the user's turn is over. The VAD auto-stop path (stopRecording) already
-      // does this on its own; tapping the button to manually end the utterance did not, which
-      // left the server waiting for audio that would never come and the UI stuck forever. This
-      // must only fire here (the actual "user is ending a live recording" moment) and not from
-      // inside handleStopListen generally, since that cleanup function also runs right after a
-      // turn finishes successfully -- sending turnComplete there too caused a second, spurious
-      // "empty" turn immediately after every real reply.
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          beginWaitingForResponse();
-          wsRef.current.send(JSON.stringify({ clientContent: { turnComplete: true } }));
-          console.warn('handleMicButtonClick: sent clientContent turnComplete to Gemini.');
-        } catch (e) {}
-      }
       handleStopListen();
     } else {
       handleStartListen(speaker);

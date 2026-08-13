@@ -9,8 +9,30 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://genbatalk.smart-ai-portal.com"),
   title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
   description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
+  openGraph: {
+    title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
+    description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
+    url: "https://genbatalk.smart-ai-portal.com",
+    siteName: "ゲンバトーク",
+    images: [
+      {
+        url: "/icon.png",
+        width: 512,
+        height: 512,
+        alt: "ゲンバトーク App Icon",
+      },
+    ],
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
+    description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
+    images: ["/icon.png"],
+  },
 };
 
 export default function RootLayout({

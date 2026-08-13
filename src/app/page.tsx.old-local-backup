@@ -6,7 +6,6 @@ import Timeline, { ChatMessage } from '@/components/Timeline';
 import SettingsModal from '@/components/SettingsModal';
 import AudioWave from '@/components/AudioWave';
 import PresetDrawer from '@/components/PresetDrawer';
-import { getGlossaryText } from '@/lib/glossary';
 
 export interface CustomGlossaryItem {
   id: string;
@@ -102,24 +101,6 @@ const DEFAULT_PRESETS: PresetItem[] = [
   }
 ];
 
-// Collapse literally-repeated clauses. Gemini Live occasionally streams a stray repeat/
-// continuation of what it just said after a turn already looked complete; this trims exact
-// duplicate clauses without touching genuinely new content.
-function dedupClauses(text: string): string {
-  if (!text || text.length <= 10) return text;
-  const clauses = text.split(/(?<=[。！？!?，,.])/);
-  const seen = new Set<string>();
-  const filtered: string[] = [];
-  for (const clause of clauses) {
-    const normalized = clause.replace(/[\s，,。！？!?.]/g, '');
-    if (!normalized) continue;
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      filtered.push(clause);
-    }
-  }
-  return filtered.join('');
-}
 
 export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -161,25 +142,10 @@ export default function Home() {
 
   // Gemini Live API Refs
   const wsRef = useRef<WebSocket | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
-  const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const isListeningRef = useRef<boolean>(false);
   const isHandsFreeRef = useRef<boolean>(false);
   const isSpeechPlayingRef = useRef<boolean>(false);
-  const isWaitingForTranslationRef = useRef<boolean>(false);
-  const audioBufferQueueRef = useRef<string[]>([]);
-  const accumulatedJsonTextRef = useRef<string>('');
-  const accumulatedInputTextRef = useRef<string>('');
-  const isEstablishingConnectionRef = useRef<boolean>(false);
-  const lastMicClickRef = useRef<number>(0);
-  const isPresetSendingRef = useRef<boolean>(false);
-  const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silenceCheckAudioCtxRef = useRef<AudioContext | null>(null);
-  const pendingResponseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentTurnMessageIdRef = useRef<string | null>(null);
-  const turnFinalizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestTurnAudioRef = useRef<{ text: string; lang: string } | null>(null);
 
   const setListeningState = (val: boolean) => {
     setIsListening(val);
@@ -334,7 +300,8 @@ export default function Home() {
               // If our own most recent message was generated locally but hasn't shown up in
               // the server response yet (the POST that publishes it is fire-and-forget and
               // can lose the race with this 1s poll), skip this tick instead of replacing
-              // local state with the still-stale remoteMsgs.
+              // local state with the still-stale remoteMsgs. Otherwise the just-sent message
+              // would flash and disappear until the next poll catches up.
               if (
                 lastLocal &&
                 localMessageIdsRef.current.has(lastLocal.id) &&
@@ -365,16 +332,6 @@ export default function Home() {
   }, [roomId, staffLang, workerLang, autoPlayAudio]);
 
   const handlePresetSelect = async (text: string) => {
-    // Guard against duplicate invocations -- e.g. a double-tap on the preset button firing
-    // onSelectPreset twice before the drawer closes, which used to send two independent
-    // /api/translate requests for the same phrase and produce two (slightly different, since
-    // each is an independent AI call) message bubbles for what the user considered one tap.
-    if (isPresetSendingRef.current) {
-      console.warn('handlePresetSelect: a request is already in flight, ignoring duplicate call.');
-      return;
-    }
-    isPresetSendingRef.current = true;
-
     const speaker = 'staff'; // Presets are always supervisor instructions
     const from = staffLang;
     const to = workerLang;
@@ -417,25 +374,9 @@ export default function Home() {
       }
     } catch (e) {
       console.error('Preset play error:', e);
-    } finally {
-      isPresetSendingRef.current = false;
     }
   };
   const checkSilence = (stream: MediaStream) => {
-    // A previous call's silence-detection timer/AudioContext must never be left running when a
-    // new one starts. If it was, two VAD timers could end up watching the same microphone at
-    // once, and each one independently declares "silence detected" and sends its own turnComplete
-    // to Gemini for what the user considers a single utterance -- producing duplicate/garbled
-    // replies. Always tear down whatever is currently tracked before creating a new timer.
-    if (silenceCheckIntervalRef.current !== null) {
-      clearInterval(silenceCheckIntervalRef.current);
-      silenceCheckIntervalRef.current = null;
-    }
-    if (silenceCheckAudioCtxRef.current) {
-      try { silenceCheckAudioCtxRef.current.close(); } catch (e) {}
-      silenceCheckAudioCtxRef.current = null;
-    }
-
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) return;
@@ -448,25 +389,21 @@ export default function Home() {
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
 
+      // In manual Push-To-Talk mode, disable VAD auto-stop completely so button taps trigger exactly ONE request!
+      if (!isHandsFreeRef.current) {
+        console.log('Manual Push-To-Talk mode: VAD auto-stop disabled for 100% single request guarantee.');
+        return;
+      }
+
       const startTime = Date.now();
       let lastSoundTime = Date.now();
-      const rmsThreshold = 0.012; // Lowered from 0.025 to be much more sensitive to quiet speech
-      const silenceDuration = isHandsFreeRef.current ? 3000 : 2500; // 3.0s for Hands-free, 2.5s for manual to prevent cutting off early
+      const rmsThreshold = 0.010; // High sensitivity to capture quiet speech
+      const silenceDuration = 2500; // 2.5s silence threshold for hands-free mode
 
       const intervalId = setInterval(() => {
         if (!isListeningRef.current) {
           clearInterval(intervalId);
           audioContext.close();
-          if (silenceCheckIntervalRef.current === intervalId) {
-            silenceCheckIntervalRef.current = null;
-            silenceCheckAudioCtxRef.current = null;
-          }
-          return;
-        }
-
-        // In hands-free mode, bypass client-side VAD checking.
-        // We rely on Gemini's highly optimized server-side VAD to detect turn completions.
-        if (isHandsFreeRef.current) {
           return;
         }
 
@@ -489,50 +426,24 @@ export default function Home() {
         const elapsed = Date.now() - startTime;
         if (rms > rmsThreshold) {
           lastSoundTime = Date.now();
-          // Ignore initial microphone activation click/pop noise in first 600ms
-          if (elapsed > 600) {
+          // Ignore initial microphone activation click/pop noise in first 300ms
+          if (elapsed > 300) {
             hasSpokenRef.current = true;
           }
         } else {
           if (Date.now() - lastSoundTime > silenceDuration) {
-            console.warn('VAD: Silence detected.');
-            if (isHandsFreeRef.current) {
-              if (hasSpokenRef.current) {
-                // Send turnComplete without stopping recording!
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                  beginWaitingForResponse();
-                  wsRef.current.send(JSON.stringify({
-                    clientContent: {
-                      turnComplete: true
-                    }
-                  }));
-                  console.warn('VAD: Sent clientContent turnComplete to Gemini (Hands-Free)');
-                  setInterimTranscript('翻訳中...');
-                }
-                hasSpokenRef.current = false; // Reset speech flag for next turn
-              }
-              // In hands-free mode, reset the timer and keep the interval alive!
-              lastSoundTime = Date.now();
+            console.warn('VAD: Silence detected (4.0s elapsed).');
+            clearInterval(intervalId);
+            if (hasSpokenRef.current) {
+              stopRecording();
             } else {
-              clearInterval(intervalId);
-              if (silenceCheckIntervalRef.current === intervalId) {
-                silenceCheckIntervalRef.current = null;
-                silenceCheckAudioCtxRef.current = null;
-              }
-              if (hasSpokenRef.current) {
-                stopRecording();
-              } else {
-                console.warn('VAD: User did not speak. Cancelling session.');
-                handleStopListen();
-              }
-              audioContext.close();
+              console.warn('VAD: User did not speak. Cancelling session.');
+              handleStopListen();
             }
+            audioContext.close();
           }
         }
       }, 100);
-
-      silenceCheckIntervalRef.current = intervalId;
-      silenceCheckAudioCtxRef.current = audioContext;
     } catch (e) {
       console.error('VAD initialization failed:', e);
     }
@@ -563,53 +474,17 @@ export default function Home() {
     return result;
   };
 
-  // While we're waiting for Gemini's response to a completed turn, block starting a new
-  // recording. Without this, tapping the mic again before the previous reply finished streaming
-  // in would reset the shared accumulator refs mid-stream and mix the old answer's leftover text
-  // into the new utterance. A safety timeout guarantees the mic never gets stuck locked if a
-  // response never arrives (e.g. a dropped connection).
-  const beginWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = true;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-    }
-    pendingResponseTimeoutRef.current = setTimeout(() => {
-      console.warn('No response from Gemini within 15s, releasing the mic lock.');
-      isWaitingForTranslationRef.current = false;
-      pendingResponseTimeoutRef.current = null;
-      setNetworkError('⚠️ 応答がありませんでした。もう一度お試しください。');
-      setTimeout(() => setNetworkError(null), 5000);
-    }, 15000);
-  };
-
-  const endWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = false;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-      pendingResponseTimeoutRef.current = null;
-    }
-  };
+  const isProcessingAudioRef = useRef<boolean>(false);
 
   const handleStartListen = async (speaker: 'staff' | 'worker') => {
-    if (isWaitingForTranslationRef.current) {
-      console.warn('handleStartListen: still waiting for the previous turn\'s response, ignoring new start.');
-      return;
-    }
     initAudioContext();
     setMicPermissionError(false);
     setActiveSpeaker(speaker);
     activeSpeakerRef.current = speaker;
-    setInterimTranscript('接続を開始しています...');
+    setInterimTranscript('マイク準備中...');
     hasSpokenRef.current = false;
+    isProcessingAudioRef.current = false;
     setListeningState(true);
-    accumulatedJsonTextRef.current = '';
-    accumulatedInputTextRef.current = '';
-    currentTurnMessageIdRef.current = null;
-    if (turnFinalizeTimeoutRef.current) {
-      clearTimeout(turnFinalizeTimeoutRef.current);
-      turnFinalizeTimeoutRef.current = null;
-    }
-    latestTurnAudioRef.current = null;
 
     try {
       let stream = audioStreamRef.current;
@@ -618,415 +493,158 @@ export default function Home() {
         audioStreamRef.current = stream;
       }
 
-      // Check if WebSocket is already open and reuse it!
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        console.warn('Reusing existing open WebSocket connection.');
-        setInterimTranscript('聞き取り中...');
+      // Determine supported mimeType for MediaRecorder
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+        else if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+        else if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+      }
 
-        const actx = audioContextRef.current;
-        if (!actx) throw new Error('AudioContext not initialized');
+      const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
 
-        if (mediaSourceRef.current) {
-          try { mediaSourceRef.current.disconnect(); } catch(e){}
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
-        if (scriptProcessorRef.current) {
-          try { scriptProcessorRef.current.disconnect(); } catch(e){}
-        }
-
-        const source = actx.createMediaStreamSource(stream);
-        mediaSourceRef.current = source;
-
-        const processor = actx.createScriptProcessor(2048, 1, 1);
-        scriptProcessorRef.current = processor;
-
-        source.connect(processor);
-        processor.connect(actx.destination);
-
-        let chunksSent = 0;
-        const ws = wsRef.current;
-        processor.onaudioprocess = (e) => {
-          if (!isListeningRef.current) return;
-          if (isSpeechPlayingRef.current || isWaitingForTranslationRef.current) return;
-          const inputData = e.inputBuffer.getChannelData(0);
-          const int16Buffer = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-          }
-          let binary = '';
-          const bytes = new Uint8Array(int16Buffer.buffer);
-          const len = bytes.byteLength;
-          for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          const base64PCM = window.btoa(binary);
-          
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              realtimeInput: {
-                audio: {
-                  mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                  data: base64PCM
-                }
-              }
-            }));
-            chunksSent++;
-          }
-        };
-
-        checkSilence(stream);
-        return;
-      }
-
-      if (isEstablishingConnectionRef.current) {
-        // A previous invocation (e.g. from a duplicate click/tap event) is already in the
-        // middle of fetching a token and opening a WebSocket. Bail out instead of racing it --
-        // otherwise both would eventually assign wsRef.current and we'd end up with two live
-        // sessions both listening to the same microphone.
-        console.warn('handleStartListen: connection already being established, ignoring duplicate call.');
-        return;
-      }
-      isEstablishingConnectionRef.current = true;
-
-      const tokenRes = await fetch('/api/session-token', { method: 'POST' });
-      if (!tokenRes.ok) {
-        throw new Error('使い捨てトークンの取得に失敗しました。');
-      }
-      const tokenData = await tokenRes.json();
-      const token = tokenData.token;
-
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${token}`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      isEstablishingConnectionRef.current = false;
-
-      audioBufferQueueRef.current = []; // Clear buffer queue on start
-
-      ws.onopen = () => {
-        console.warn('Gemini Live API WebSocket connection established.');
-        setInterimTranscript('聞き取り中...');
-        
-        const to = speaker === 'staff' ? workerLang : staffLang;
-        const customGlossaryPrompt = customGlossary && customGlossary.length > 0
-          ? customGlossary
-              .filter((item: any) => item.ja && item.translation && item.lang)
-              .map((item: any) => `- "${item.ja}" (ja) <-> "${item.translation}" (${item.lang}) (Translate bidirectionally. When translating to Japanese, always use "${item.ja}")`)
-              .join('\n')
-          : '';
-        
-        const glossaryText = getGlossaryText('ja', workerLang) + '\n' + getGlossaryText(workerLang, 'ja') + '\n' + (customGlossaryPrompt ? `\nCompany-Specific Glossary (You must prioritize these translations):\n${customGlossaryPrompt}` : '');
-        
-        const contextStr = 'Context: This is a real-time conversation at a construction site, factory, or industrial workplace between a Japanese supervisor and a foreign worker. Use appropriate industry terminology (e.g., safety harness, curing, helmet) and ensure the translation is clear, polite, and natural for workplace communication.\n' +
-          'Nuance Guidelines:\n' +
-          '- Translate Japanese "免許証" or "免許" (referring to qualifications) to "驾照" (driver\'s license) or "资格证/操作证" (qualification/operation certificate) in Chinese (do not use generic "执照").\n' +
-          '- Translate Chinese "驾照" or "驾驶证" back to Japanese specifically as "免許証" (or "運転免許証"), not generic "免許".\n' +
-          '- Translate Japanese "ヘルメット" to "安全帽" in Chinese, and "mũ bảo hộ" or "nón bảo hộ" in Vietnamese (do not use "头盔" or "mũ bảo hiểm").\n' +
-          '- Chinese "还不错" or "还不错吧" (spoken by a worker to a supervisor) should be translated politely as "悪くないですね", "問題なさそうです", or "順調です".\n' +
-          '- Translate Chinese "我很饿" or "饿了" (I am hungry) to natural Japanese "お腹が空いています" (with correct ruby: <ruby>お腹<rt>おなか</rt></ruby>が<ruby>空<rt>す</rt></ruby>いています) rather than literal "私はとてもお腹が空いています".\n' +
-          '- For extremely short responses or confirmations (e.g. "예" (ko), "네" (ko), "对" (zh), "yes" (en), "ok" (en), etc.), translate them simply and directly to the equivalent confirmation in the target language (e.g., to Japanese "はい" or "了解しました"). NEVER expand them into long sentences or guess safety warnings.\n' +
-          'CRITICAL: You are a strict translator. You must ONLY output the translated text. NEVER explain the meaning of the input, NEVER reply, NEVER add warnings or corrections, and NEVER output any conversational comments or advice.';
-
-        let instruction = `${contextStr}\n${glossaryText}\n\n` +
-          `You are a bidirectional real-time translator between Japanese ("ja") and multiple foreign languages (including Chinese, Vietnamese, Korean, English, Tagalog, Indonesian, Nepali, Burmese, etc.).\n` +
-          `Listen to the spoken audio:\n` +
-          `1. If the speaker speaks Japanese ("ja"), translate it to the target language "${workerLang}".\n` +
-          `2. If the speaker speaks ANY foreign language (e.g., Chinese, Vietnamese, Korean, English, Tagalog, Indonesian, Nepali, Burmese, etc.), translate it strictly to Japanese ("ja").\n` +
-          `Output ONLY the translated text. Do not add any prefixes, explanations, or conversational filler.\n` +
-          `CRITICAL: If the input audio is silent, contains only static, noise, background sounds, or incomprehensible whispers, you must output ABSOLUTELY NOTHING. Do not guess, do not try to translate.\n` +
-          (useRuby ? `\nWhen translating to Japanese, format all kanji characters with HTML ruby tags for furigana (e.g., <ruby>私<rt>わたし</rt></ruby>は<ruby>行<rt>い</rt></ruby>きます). Ensure that every <rt> tag is properly closed with a matching </rt> tag and wrapped in <ruby> tags. Only add ruby tags to Kanji characters. NEVER add ruby tags to Hiragana, Katakana, punctuation, numbers, or English letters.` : '') +
-          `\nAlways detect the spoken language. If translating to Japanese ("ja"), add a new line at the end with the detected 2-letter language code of the speaker in square brackets (e.g. "[zh]", "[vi]", "[en]", "[ko]", "[id]", "[tl]", "[ne]", "[my]").`;
-
-        ws.send(JSON.stringify({
-          setup: {
-            model: "models/gemini-3.1-flash-live-preview",
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              temperature: 0.0
-            },
-            systemInstruction: {
-              parts: [{ text: instruction }]
-            },
-            output_audio_transcription: {},
-            input_audio_transcription: {},
-            outputAudioTranscription: {},
-            inputAudioTranscription: {}
-          }
-        }));
-        
-        
-        // Start silence detection only after WebSocket connection is open!
-        checkSilence(stream);
       };
 
-      ws.onmessage = async (event) => {
+      mediaRecorder.onstop = async () => {
+        if (isProcessingAudioRef.current) {
+          console.warn('Audio translation already processing. Ignoring duplicate onstop event.');
+          return;
+        }
+        isProcessingAudioRef.current = true;
+        setListeningState(false);
+
+        const capturedChunks = [...audioChunksRef.current];
+        audioChunksRef.current = [];
+        const audioBlob = new Blob(capturedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        
+        if (audioBlob.size < 1500) {
+          console.warn('No audio captured or audio file too small');
+          setInterimTranscript('');
+          isProcessingAudioRef.current = false;
+          return;
+        }
+
+        setInterimTranscript('AIが翻訳中...');
         try {
-          let textData = '';
-          if (event.data instanceof Blob) {
-            textData = await event.data.text();
-          } else if (typeof event.data === 'string') {
-            textData = event.data;
-          } else {
-            console.warn('Received unknown binary frame');
-            return;
-          }
-          const response = JSON.parse(textData);
+          const currentSpeaker = activeSpeakerRef.current;
+          const from = currentSpeaker === 'staff' ? staffLang : workerLang;
+          const to = currentSpeaker === 'staff' ? workerLang : 'ja';
 
-          if (!isListeningRef.current && !isWaitingForTranslationRef.current) {
-            // We're not in an active recording or awaiting-response window at all (the turn was
-            // already fully finalized a while ago). Anything arriving now is a very late
-            // straggler from a finished turn -- ignore it rather than risk creating/mutating a
-            // message bubble well after the fact.
-            return;
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'speech.webm');
+          formData.append('fromLang', from);
+          formData.append('toLang', to);
+          formData.append('useRuby', String(useRuby));
+          formData.append('customGlossary', JSON.stringify(customGlossary || []));
+
+          const res = await fetch('/api/translate-audio', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.error || '翻訳処理に失敗しました');
           }
 
-          if (response.serverContent?.modelTurn?.parts) {
-            for (const part of response.serverContent.modelTurn.parts) {
-              if (part.text) {
-                accumulatedJsonTextRef.current += part.text;
-                console.warn('Received Live Translate text chunk:', part.text);
-              }
+          const data = await res.json();
+          if (data.success && !data.noSpeech && data.translatedText) {
+            let detected = data.detectedLanguage || from;
+            if (currentSpeaker === 'worker' && detected && detected !== 'ja' && ['vi', 'en', 'ne', 'id', 'tl', 'zh', 'ko', 'pt', 'es', 'th', 'ru', 'fr', 'my', 'si', 'km', 'ur'].includes(detected)) {
+              console.warn(`VAD: Detected worker language as ${detected}`);
+              setWorkerLang(detected);
             }
-          }
-          if (response.serverContent?.outputTranscription?.text) {
-            accumulatedJsonTextRef.current += response.serverContent.outputTranscription.text;
-            console.warn('Received Live Translate text chunk (transcription):', response.serverContent.outputTranscription.text);
-            const cleanText = accumulatedJsonTextRef.current
-              .replace(/<ruby>[^<]*<rt>([^<]*)(<\/rt>)?(<\/ruby>)?/g, '$1')
-              .replace(/<[^>]*>/g, '')
-              .replace(/\[[a-z]{2}\]/gi, '')
-              .trim();
-            setInterimTranscript(`翻訳中: ${cleanText}`);
-          }
-          if (response.serverContent?.inputTranscription?.text) {
-            accumulatedInputTextRef.current += response.serverContent.inputTranscription.text;
-            console.warn('Received User Input text chunk (transcription):', response.serverContent.inputTranscription.text);
-            const cleanText = accumulatedInputTextRef.current
-              .replace(/<ruby>[^<]*<rt>([^<]*)(<\/rt>)?(<\/ruby>)?/g, '$1')
-              .replace(/<[^>]*>/g, '')
-              .replace(/\[[a-z]{2}\]/gi, '')
-              .trim();
-            setInterimTranscript(`認識中: ${cleanText}`);
-          }
 
-          if (response.serverContent?.turnComplete) {
-            // Gemini does not reliably send exactly one turnComplete per utterance -- sometimes
-            // the first one arrives before the answer has finished streaming (so it's truncated),
-            // and sometimes it sends an extra one afterward that just repeats/continues what it
-            // already said. Rather than guessing which single event is "the real answer" (which
-            // either duplicated or truncated messages depending on which case happened), always
-            // update the SAME message bubble for this recording with whatever has accumulated so
-            // far, and only actually finish the turn (release the mic, play audio) after a short
-            // quiet period with no further activity from the server.
-            if (turnFinalizeTimeoutRef.current) {
-              clearTimeout(turnFinalizeTimeoutRef.current);
-              turnFinalizeTimeoutRef.current = null;
-            }
-            console.warn('Gemini turn complete signal. Accumulated so far:', accumulatedJsonTextRef.current);
+            const newMsg: ChatMessage = {
+              id: Math.random().toString(36).substring(7),
+              sender: currentSpeaker,
+              originalText: data.originalText || (currentSpeaker === 'staff' ? '音声指示 (日本語)' : '音声回答 (外国語)'),
+              translatedText: data.translatedText,
+              fromLang: currentSpeaker === 'staff' ? staffLang : detected,
+              toLang: to,
+              timestamp: new Date(),
+            };
 
-             try {
-              let translation = accumulatedJsonTextRef.current.trim();
-              let detected = workerLang;
+            localMessageIdsRef.current.add(newMsg.id);
 
-                // Parse format "[ko]" at the end (with or without newline)
-                const match = translation.match(/([\s\S]*?)\[([a-z]{2})\]\s*$/i);
-                if (match) {
-                  detected = match[2].toLowerCase();
+            let isNewMessageAdded = false;
+            setMessages(prev => {
+              const now = new Date().getTime();
+              const clean = (str: string) => str.replace(/[\s\n\r、。,.「」！？!?]/g, '');
+              const normNew = clean(newMsg.originalText);
+
+              // Find ANY matching or overlapping message from the same sender in the last 60s
+              const matchIndex = prev.findIndex(m => {
+                if (m.sender !== newMsg.sender) return false;
+                const mTime = m.timestamp ? new Date(m.timestamp).getTime() : 0;
+                if (mTime > 0 && Math.abs(now - mTime) > 60000) return false;
+
+                const normM = clean(m.originalText);
+                return (
+                  normM === normNew ||
+                  (normNew.length >= normM.length && (normNew.startsWith(normM) || normNew.includes(normM))) ||
+                  (normM.length >= normNew.length && (normM.startsWith(normNew) || normM.includes(normNew)))
+                );
+              });
+
+              if (matchIndex !== -1) {
+                console.warn(`Updating existing message bubble at index ${matchIndex} in place with complete translation`);
+                const updated = [...prev];
+                updated[matchIndex] = {
+                  ...newMsg,
+                  id: prev[matchIndex].id // Maintain original message ID to overwrite existing card seamlessly
+                };
+                if (roomId) {
+                  fetch('/api/channel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ roomId, messages: updated }),
+                  }).catch(console.error);
                 }
-                // Strip all language code brackets from the translation text to prevent leaks
-                translation = translation.replace(/\[[a-z]{2}\]/gi, '').trim();
-
-              // Remove markdown code block backticks if any
-              if (translation.startsWith('```')) {
-                translation = translation.replace(/^```[a-zA-Z]*\n?/, '');
+                return updated;
               }
-              if (translation.endsWith('```')) {
-                translation = translation.substring(0, translation.length - 3);
+
+              isNewMessageAdded = true;
+              const updated = [...prev, newMsg];
+              if (roomId) {
+                fetch('/api/channel', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ roomId, messages: updated }),
+                }).catch(console.error);
               }
-              translation = dedupClauses(translation.trim());
+              return updated;
+            });
 
-              if (translation) {
-                const to = activeSpeakerRef.current === 'staff' ? workerLang : staffLang;
-
-                if (activeSpeakerRef.current === 'worker' && detected && detected !== 'ja' && ['vi', 'en', 'ne', 'id', 'tl', 'zh', 'ko', 'pt', 'es', 'th', 'ru', 'fr', 'my', 'si', 'km', 'ur'].includes(detected)) {
-                  console.warn(`VAD: Automatically detected worker language as: ${detected}`);
-                  setWorkerLang(detected);
-                }
-
-                const fromLang = activeSpeakerRef.current === 'staff' ? staffLang : detected;
-                const toLang = activeSpeakerRef.current === 'staff' ? workerLang : 'ja';
-                const originalText = accumulatedInputTextRef.current.trim() || (activeSpeakerRef.current === 'staff' ? '音声指示 (日本語)' : '音声回答 (外国語)');
-
-                setMessages(prev => {
-                  const existingIndex = currentTurnMessageIdRef.current
-                    ? prev.findIndex(m => m.id === currentTurnMessageIdRef.current)
-                    : -1;
-
-                  let updated: ChatMessage[];
-                  let msgId: string;
-                  if (existingIndex !== -1) {
-                    msgId = prev[existingIndex].id;
-                    updated = [...prev];
-                    updated[existingIndex] = { ...updated[existingIndex], originalText, translatedText: translation, fromLang, toLang };
-                  } else {
-                    msgId = Math.random().toString(36).substring(7);
-                    localMessageIdsRef.current.add(msgId);
-                    updated = [...prev, {
-                      id: msgId,
-                      sender: activeSpeakerRef.current,
-                      originalText,
-                      translatedText: translation,
-                      fromLang,
-                      toLang,
-                      timestamp: new Date(),
-                    }];
-                  }
-                  currentTurnMessageIdRef.current = msgId;
-
-                  if (roomId) {
-                    fetch('/api/channel', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ roomId, messages: updated }),
-                    }).catch(console.error);
-                  }
-                  return updated;
-                });
-
-                latestTurnAudioRef.current = { text: translation, lang: to };
-              }
-            } catch (err) {
-              console.error('Failed to parse final translation JSON:', err, accumulatedJsonTextRef.current);
+            if (autoPlayAudio && isNewMessageAdded) {
+              playSpeech(data.translatedText, to);
             }
-
-            turnFinalizeTimeoutRef.current = setTimeout(() => {
-              turnFinalizeTimeoutRef.current = null;
-              currentTurnMessageIdRef.current = null;
-              endWaitingForResponse();
-
-              if (autoPlayAudio && latestTurnAudioRef.current) {
-                playSpeech(latestTurnAudioRef.current.text, latestTurnAudioRef.current.lang);
-              }
-              latestTurnAudioRef.current = null;
-
-              if (isHandsFreeRef.current) {
-                accumulatedJsonTextRef.current = '';
-                accumulatedInputTextRef.current = '';
-                // Toggle speaker automatically for next turn
-                const nextSpeaker = activeSpeakerRef.current === 'staff' ? 'worker' : 'staff';
-                setActiveSpeaker(nextSpeaker);
-                activeSpeakerRef.current = nextSpeaker;
-                setInterimTranscript('聞き取り中...');
-              } else {
-                handleStopListen();
-              }
-            }, 1200);
           }
-        } catch (e) {
-          console.error('Error handling WebSocket message:', e);
+        } catch (e: any) {
+          console.error('Audio Translation error:', e);
+          setNetworkError(`⚠️ ${e.message || '通信エラーが発生しました。もう一度お試しください。'}`);
+          setTimeout(() => setNetworkError(null), 5000);
+        } finally {
+          setListeningState(false);
+          setInterimTranscript('');
         }
       };
 
-      ws.onerror = (e) => {
-        console.error('WebSocket Error:', e);
-        setNetworkError('⚠️ 通信エラーが発生しました。接続状況を確認し、もう一度お試しください。');
-        setTimeout(() => setNetworkError(null), 6000);
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
-        handleStopListen();
-      };
+      // Start MediaRecorder (timeslice 200ms)
+      mediaRecorder.start(200);
+      setInterimTranscript('聞き取り中...');
 
-      ws.onclose = () => {
-        console.warn('Gemini Live API WebSocket connection closed.');
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
-        setIsListening(false);
-        setInterimTranscript('');
-      };
-
-      const actx = audioContextRef.current;
-      if (!actx) {
-        throw new Error('AudioContext not initialized');
-      }
-      
-      const source = actx.createMediaStreamSource(stream);
-      mediaSourceRef.current = source;
-
-      const processor = actx.createScriptProcessor(2048, 1, 1);
-      scriptProcessorRef.current = processor;
-
-      // Connect them immediately under the direct user interaction click handler to avoid Chrome's async resume blocks
-      source.connect(processor);
-      processor.connect(actx.destination);
-
-      let chunksSent = 0;
-      processor.onaudioprocess = (e) => {
-        if (!isListeningRef.current) return;
-        if (isSpeechPlayingRef.current || isWaitingForTranslationRef.current) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-        // Convert Float32 native samples to Int16 directly to avoid downsampling artifacts
-        const int16Buffer = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-        }
-        
-        let binary = '';
-        const bytes = new Uint8Array(int16Buffer.buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64PCM = window.btoa(binary);
-        
-        if (ws.readyState === WebSocket.OPEN) {
-          // Flush any buffered chunks from the connection phase first
-          if (audioBufferQueueRef.current.length > 0) {
-            console.warn(`Flushing ${audioBufferQueueRef.current.length} buffered audio chunks`);
-            for (const queuedChunk of audioBufferQueueRef.current) {
-              ws.send(JSON.stringify({
-                realtimeInput: {
-                  audio: {
-                    mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                    data: queuedChunk
-                  }
-                }
-              }));
-              chunksSent++;
-            }
-            audioBufferQueueRef.current = [];
-          }
-
-          // Send current chunk
-          ws.send(JSON.stringify({
-            realtimeInput: {
-              audio: {
-                mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                data: base64PCM
-              }
-            }
-          }));
-          chunksSent++;
-          if (chunksSent % 15 === 0) {
-            console.warn(`Sent ${chunksSent} audio chunks to Gemini`);
-          }
-        } else if (ws.readyState === WebSocket.CONNECTING) {
-          // Buffer audio while the socket is establishing connection to avoid losing the first 1-2 seconds of speech
-          audioBufferQueueRef.current.push(base64PCM);
-        }
-      };
-
-
+      // Start VAD for auto-stop on silence
+      checkSilence(stream);
 
     } catch (err: any) {
-      console.error('Failed to initialize Live API session:', err);
-      isEstablishingConnectionRef.current = false;
+      console.error('Failed to start recording session:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError') {
         setMicPermissionError(true);
       } else {
@@ -1038,68 +656,22 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    // Send turnComplete to Gemini to signal end of user speech and trigger response!
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      beginWaitingForResponse();
-      wsRef.current.send(JSON.stringify({
-        clientContent: {
-          turnComplete: true
-        }
-      }));
-      console.warn('Sent clientContent turnComplete to Gemini');
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch(e) {}
+      recognitionRef.current = null;
     }
-
-    // Stop audio tracks
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch(e) {}
+    }
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach(track => track.stop());
       audioStreamRef.current = null;
-    }
-
-    // Disconnect processors
-    if (mediaSourceRef.current && scriptProcessorRef.current) {
-      try {
-        mediaSourceRef.current.disconnect(scriptProcessorRef.current);
-      } catch (e) {}
-    }
-    if (scriptProcessorRef.current) {
-      try {
-        scriptProcessorRef.current.disconnect();
-      } catch (e) {}
-      scriptProcessorRef.current = null;
-    }
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      try {
-        audioContextRef.current.close();
-      } catch (e) {}
-      audioContextRef.current = null;
     }
   };
 
   const handleStopListen = () => {
+    stopRecording();
     setListeningState(false);
-    
-    // Stop audio tracks
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
-    }
-
-    // Disconnect processors
-    if (scriptProcessorRef.current) {
-      try {
-        scriptProcessorRef.current.disconnect();
-      } catch (e) {}
-      scriptProcessorRef.current = null;
-    }
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      try {
-        audioContextRef.current.close();
-      } catch (e) {}
-      audioContextRef.current = null;
-    }
-
     setInterimTranscript('');
   };
 
@@ -1210,37 +782,6 @@ export default function Home() {
       }
       
       window.speechSynthesis.speak(utterance);
-    }
-  };
-
-  const handleMicButtonClick = (speaker: 'staff' | 'worker') => {
-    // Debounce rapid duplicate click/tap events on the same button (e.g. mobile "ghost clicks"),
-    // which used to be able to fire handleStartListen twice for a single physical tap.
-    const now = Date.now();
-    if (now - lastMicClickRef.current < 600) {
-      console.warn('Ignoring rapid duplicate mic button click.');
-      return;
-    }
-    lastMicClickRef.current = now;
-
-    if (isListening && activeSpeaker === speaker) {
-      // Tell Gemini the user's turn is over. The VAD auto-stop path (stopRecording) already
-      // does this on its own; tapping the button to manually end the utterance did not, which
-      // left the server waiting for audio that would never come and the UI stuck forever. This
-      // must only fire here (the actual "user is ending a live recording" moment) and not from
-      // inside handleStopListen generally, since that cleanup function also runs right after a
-      // turn finishes successfully -- sending turnComplete there too caused a second, spurious
-      // "empty" turn immediately after every real reply.
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          beginWaitingForResponse();
-          wsRef.current.send(JSON.stringify({ clientContent: { turnComplete: true } }));
-          console.warn('handleMicButtonClick: sent clientContent turnComplete to Gemini.');
-        } catch (e) {}
-      }
-      handleStopListen();
-    } else {
-      handleStartListen(speaker);
     }
   };
 
@@ -1436,7 +977,13 @@ export default function Home() {
           <div className="flex-1 flex flex-col items-center gap-2">
             <button
               disabled={isListening && activeSpeaker !== 'staff'}
-              onClick={() => handleMicButtonClick('staff')}
+              onClick={() => {
+                if (isListening && activeSpeaker === 'staff') {
+                  handleStopListen();
+                } else {
+                  handleStartListen('staff');
+                }
+              }}
               className={`w-full py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-md ${
                 isListening && activeSpeaker === 'staff'
                   ? 'bg-red-500 text-white animate-pulse shadow-red-500/10'
@@ -1463,7 +1010,13 @@ export default function Home() {
           <div className="flex-1 flex flex-col items-center gap-2">
             <button
               disabled={isListening && activeSpeaker !== 'worker'}
-              onClick={() => handleMicButtonClick('worker')}
+              onClick={() => {
+                if (isListening && activeSpeaker === 'worker') {
+                  handleStopListen();
+                } else {
+                  handleStartListen('worker');
+                }
+              }}
               className={`w-full py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-md ${
                 isListening && activeSpeaker === 'worker'
                   ? 'bg-red-500 text-white animate-pulse shadow-red-500/10'
