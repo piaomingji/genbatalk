@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
+import { clientKey, consumeDailyQuota } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -23,18 +23,9 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Text too long for TTS proxy; use client-side speech synthesis fallback', { status: 413 });
     }
 
-    // Rate Limiting via Vercel KV
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
-    const ipKey = `genbatalk:rate:${ip}`;
-    let currentIpCount = 0;
-    
-    try {
-      currentIpCount = (await kv.get<number>(ipKey)) || 0;
-      if (currentIpCount >= 50) {
-        return new NextResponse('Rate limit exceeded', { status: 429 });
-      }
-    } catch (e) {
-      console.warn('Vercel KV not connected yet, skipping rate limit check:', e);
+    const { id } = clientKey(req);
+    if (!(await consumeDailyQuota('tts', id, 300))) {
+      return new NextResponse('Rate limit exceeded', { status: 429 });
     }
 
     const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${encodeURIComponent(text)}`;
@@ -48,16 +39,6 @@ export async function GET(req: NextRequest) {
     if (!response.ok) {
       return new NextResponse('Failed to fetch TTS', { status: response.status });
     }
-
-    // Increment KV Rate Limit Counter
-    try {
-      if (currentIpCount === 0) {
-        await kv.set(ipKey, 1, { ex: 24 * 60 * 60 });
-      } else {
-        const ttl = await kv.ttl(ipKey);
-        await kv.set(ipKey, currentIpCount + 1, ttl > 0 ? { ex: ttl } : { ex: 24 * 60 * 60 });
-      }
-    } catch (e) {}
 
     const arrayBuffer = await response.arrayBuffer();
     return new NextResponse(Buffer.from(arrayBuffer), {

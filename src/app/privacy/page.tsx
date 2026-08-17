@@ -10,12 +10,12 @@ export default function PrivacyPage() {
       
       {/* Header Navigation */}
       <header className="border-b border-slate-900/80 px-6 py-4 flex items-center justify-between shrink-0 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
-        <Link href="/pricing" className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-slate-100 transition-all select-none">
+        <Link href="/" className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-slate-100 transition-all select-none">
           <ArrowLeft className="w-4 h-4" />
-          <span>料金プランへ戻る</span>
+          <span>Back to Talkie</span>
         </Link>
         <div className="font-black text-sm tracking-widest text-slate-300">
-          GENBA<span className="text-emerald-400">TALK</span>
+          TALK<span className="text-emerald-400">IE</span>
         </div>
       </header>
 
@@ -24,49 +24,102 @@ export default function PrivacyPage() {
         
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-black text-slate-100 tracking-tight leading-none">
-            プライバシーポリシー
+            Privacy Policy
           </h1>
           <p className="text-xs text-slate-500 leading-normal">
-            ゲンバトークの個人情報および音声データの保護に関する方針です。
+            How Talkie handles your voice and your data.
           </p>
         </div>
 
         <div className="bg-slate-900/30 border border-slate-900 rounded-3xl p-6 md:p-8 space-y-6 text-xs text-slate-400 leading-relaxed">
-          
+
           <section className="space-y-2">
-            <h2 className="font-black text-slate-200 text-sm">1. 個人情報の収集目的</h2>
+            <h2 className="font-black text-slate-200 text-sm">1. What Talkie does with your voice</h2>
             <p>
-              当サービスは、決済手続き（Stripe経由での決済認証）、お問い合わせへの対応、およびサービスの利用状況分析のために必要最小限の個人情報を収集します。
+              To translate speech, your audio has to be understood by a machine translation service.
+              While the microphone is on, audio is streamed from your browser to Google&apos;s Gemini
+              API, which returns the translation. Google processes this audio on our behalf as part
+              of providing the service; we cannot translate without it.
+            </p>
+            <p>
+              Talkie does not record your audio. It is not written to our servers, and we keep no
+              copy of it once a translation has been produced. Google&apos;s own handling of API
+              data is governed by their terms; we use the paid tier, under which submitted data is
+              not used to train their models.
             </p>
           </section>
 
           <section className="space-y-2">
-            <h2 className="font-black text-slate-200 text-sm">2. 音声・通訳データのプライバシー保護</h2>
-            <ul className="list-decimal list-inside space-y-1.5 pl-1">
-              <li>利用者が本アプリのマイクを通して入力した音声データは、リアルタイムの翻訳・通訳処理のみに使用されます。</li>
-              <li>アップロードされた音声データおよび翻訳されたテキストを、利用者の事前の明示的な同意なくAIの追加学習やシステム開発のためのデータセットとして流用・二次利用することは一切ありません。</li>
-              <li>音声データおよびテキストデータは安全な暗号化通信（SSL/TLS）により保護されます。</li>
+            <h2 className="font-black text-slate-200 text-sm">2. Your conversation</h2>
+            <p>
+              The transcript you see on screen is held in your browser only. It is not uploaded and
+              not stored by us, and it disappears when you clear the conversation or close the page.
+            </p>
+            <p>
+              Short pieces of translated text are sent to Google to add furigana readings and to
+              check the wording. This is text only, never audio, and it is not retained by us.
+            </p>
+          </section>
+
+          <section className="space-y-2">
+            <h2 className="font-black text-slate-200 text-sm">3. Usage measurement</h2>
+            <p>
+              Plans include a set number of minutes, so we have to count them. For that purpose we
+              store, for each user:
+            </p>
+            <ul className="list-disc list-inside space-y-1.5 pl-1">
+              <li>a random identifier kept in a cookie on your device;</li>
+              <li>your IP address, so the allowance cannot simply be reset by clearing the cookie;</li>
+              <li>the number of seconds translated and sessions started.</li>
             </ul>
-          </section>
-
-          <section className="space-y-2">
-            <h2 className="font-black text-slate-200 text-sm">3. 音声データの保存および安全な削除</h2>
             <p>
-              プライバシー保護の観点から、通訳処理に使用された一時的な音声ファイルは、翻訳処理が完了した時点で当サービスのサーバー上から即座に自動破棄され、蓄積または保存されることはありません。
+              These records contain no audio and no conversation content. They are deleted
+              automatically: session counts after about a day and a half, minute counts after about
+              two months.
             </p>
           </section>
 
           <section className="space-y-2">
-            <h2 className="font-black text-slate-200 text-sm">4. 第三者への開示・提供の制限</h2>
+            <h2 className="font-black text-slate-200 text-sm">4. Payment</h2>
             <p>
-              当サービスは、収集した個人情報および音声データを、法令に基づく要請がある場合を除き、利用者の承諾なしに第三者へ開示または提供することはありません。
+              Paid plans are processed by Stripe. Card details are entered on Stripe&apos;s systems
+              and are never seen or stored by Talkie. We receive only what is needed to know that a
+              subscription is active.
             </p>
           </section>
 
           <section className="space-y-2">
-            <h2 className="font-black text-slate-200 text-sm">5. プライバシーポリシーの改定</h2>
+            <h2 className="font-black text-slate-200 text-sm">5. Who else sees your data</h2>
             <p>
-              当サービスは、個人情報保護法の改正やサービスの変更に伴い、本プライバシーポリシーを随時更新することがあります。重要な変更がある場合は、サービスサイト上で事前にお知らせいたします。
+              Beyond the providers named above — Google for translation, Stripe for payment, and our
+              hosting provider — we do not share your data with anyone, and we do not sell it. We
+              disclose data only where the law requires it.
+            </p>
+          </section>
+
+          <section className="space-y-2">
+            <h2 className="font-black text-slate-200 text-sm">6. Your rights</h2>
+            <p>
+              You may ask what we hold about you, ask for it to be corrected or deleted, or object to
+              its processing. Because usage records are tied to a cookie and an IP address rather
+              than to your name, please contact us from the device concerned so we can identify the
+              right records. Depending on where you live, you may also have the right to complain to
+              a data protection authority.
+            </p>
+          </section>
+
+          <section className="space-y-2">
+            <h2 className="font-black text-slate-200 text-sm">7. Changes</h2>
+            <p>
+              We may update this policy as the service changes. Significant changes will be
+              announced on the site before they take effect.
+            </p>
+            <p className="text-slate-500">
+              Questions about this policy?{' '}
+              <Link href="/contact" className="text-emerald-400 hover:underline font-bold">
+                Contact us
+              </Link>
+              .
             </p>
           </section>
 
@@ -76,7 +129,7 @@ export default function PrivacyPage() {
 
       {/* Footer */}
       <footer className="border-t border-slate-900/60 px-6 py-6 text-center text-[10px] text-slate-500 shrink-0 select-none">
-        <p>© 2026 GENBATALK. All rights reserved.</p>
+        <p>© 2026 Talkie. All rights reserved.</p>
       </footer>
 
     </div>

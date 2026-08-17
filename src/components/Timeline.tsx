@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { Volume2, User, HelpCircle } from 'lucide-react';
+import { Volume2, Languages, ArrowRight } from 'lucide-react';
+import { Strings } from '@/lib/i18n';
+import { languageFlag, languageName } from '@/lib/languages';
 
 export interface ChatMessage {
   id: string;
@@ -12,6 +14,7 @@ export interface ChatMessage {
 }
 
 interface TimelineProps {
+  t: Strings;
   messages: ChatMessage[];
   onSpeak: (text: string, langCode: string) => void;
 }
@@ -31,27 +34,7 @@ function sanitizeTranslatedHtml(input: string): string {
   });
 }
 
-const FLAG_MAP: Record<string, string> = {
-  ja: '🇯🇵',
-  en: '🇺🇸',
-  vi: '🇻🇳',
-  ne: '🇳🇵',
-  id: '🇮🇩',
-  tl: '🇵🇭',
-  zh: '🇨🇳',
-  ko: '🇰🇷',
-  pt: '🇵🇹',
-  es: '🇪🇸',
-  th: '🇹🇭',
-  ru: '🇷🇺',
-  fr: '🇫🇷',
-  my: '🇲🇲',
-  si: '🇱🇰',
-  km: '🇰🇭',
-  ur: '🇵🇰',
-};
-
-export default function Timeline({ messages, onSpeak }: TimelineProps) {
+export default function Timeline({ t, messages, onSpeak }: TimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -63,13 +46,13 @@ export default function Timeline({ messages, onSpeak }: TimelineProps) {
     <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
       {messages.length === 0 ? (
         <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3">
-          <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
-            <User className="w-6 h-6" />
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-emerald-500/10 ring-1 ring-white/10 flex items-center justify-center text-slate-400">
+            <Languages className="w-7 h-7" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-slate-400">指示・会話履歴はありません</h3>
+            <h3 className="text-sm font-bold text-slate-400">{t.emptyTitle}</h3>
             <p className="text-xs text-slate-600 mt-1 max-w-[260px] mx-auto leading-relaxed">
-              下のマイクボタンを押して、指示や返答を音声で入力してください。
+              {t.emptyBody}
             </p>
           </div>
         </div>
@@ -84,58 +67,62 @@ export default function Timeline({ messages, onSpeak }: TimelineProps) {
                 isStaff ? 'mr-auto' : 'ml-auto flex-row-reverse'
               }`}
             >
-              {/* User Avatar with Glowing Rings */}
-              <div className={`w-9 h-9 rounded-2xl flex items-center justify-center shrink-0 text-xs font-black shadow-lg relative ${
-                isStaff 
-                  ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-indigo-600/30' 
-                  : 'bg-gradient-to-tr from-emerald-600 to-emerald-500 text-white shadow-emerald-600/30'
-              }`}>
-                {isStaff ? '監' : '作'}
-                <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-950 flex items-center justify-center text-[7px] ${
-                  isStaff ? 'bg-indigo-400' : 'bg-emerald-400'
-                }`} />
+              {/* Avatar: the speaker's own flag. The initials that used to sit here ("監" for
+                  supervisor, "作" for worker) named roles this app no longer assumes, and only made
+                  sense to a Japanese reader. A flag needs no translation. */}
+              <div
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 text-lg leading-none shadow-lg relative ring-1 ${
+                  isStaff
+                    ? 'bg-indigo-500/10 ring-indigo-500/30 shadow-indigo-950/40'
+                    : 'bg-emerald-500/10 ring-emerald-500/30 shadow-emerald-950/40'
+                }`}
+              >
+                <span aria-hidden>{languageFlag(msg.fromLang)}</span>
               </div>
 
-              {/* Message Bubble Container */}
-              <div className="space-y-1">
-                {/* Header (Sender and Lang info) */}
-                <div className={`flex items-center gap-2 text-[10px] text-slate-400 font-bold ${
-                  isStaff ? 'justify-start' : 'justify-end flex-row-reverse'
-                }`}>
-                  <span className="tracking-wide">{isStaff ? '日本人監督' : '外国人作業員'}</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="px-1.5 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-slate-300 flex items-center gap-1 font-mono">
-                    {FLAG_MAP[msg.fromLang] || '🌐'}
-                    <span className="text-[8px] text-slate-500">➔</span>
-                    {FLAG_MAP[msg.toLang] || '🌐'}
-                  </span>
+              <div className="space-y-1.5 min-w-0">
+                {/* Direction, shown once and quietly. */}
+                <div
+                  className={`flex items-center gap-1.5 text-[10px] text-slate-500 font-bold ${
+                    isStaff ? 'justify-start' : 'justify-end'
+                  }`}
+                >
+                  <span>{languageName(msg.fromLang)}</span>
+                  <ArrowRight className="w-3 h-3 text-slate-600" />
+                  <span>{languageName(msg.toLang)}</span>
                 </div>
 
-                {/* Main bubble body with glassmorphic styles and custom shadows */}
-                <div className={`p-4 rounded-3xl border backdrop-blur-xl shadow-xl transition-all hover:scale-[1.01] relative ${
-                  isStaff 
-                    ? 'bg-slate-900/70 border-slate-800/80 text-slate-100 rounded-tl-none shadow-indigo-950/10' 
-                    : 'bg-emerald-950/15 border-emerald-500/20 text-slate-100 rounded-tr-none shadow-emerald-950/10'
-                }`}>
-                  {/* Original text (smaller) */}
-                  <div className="text-xs text-slate-400 font-medium break-words leading-relaxed mb-1.5 select-all">
-                    {msg.originalText}
-                  </div>
-
-                  {/* Translated text (larger, bold) */}
-                  <div 
-                    className="text-[15px] font-black tracking-wide break-words leading-relaxed pr-8 select-all"
+                <div
+                  className={`px-4 py-3.5 rounded-3xl border backdrop-blur-xl shadow-lg transition-colors ${
+                    isStaff
+                      ? 'bg-slate-900/70 border-slate-800/80 rounded-tl-md'
+                      : 'bg-emerald-950/20 border-emerald-500/20 rounded-tr-md'
+                  }`}
+                >
+                  {/* The translation is what the other person needs, so it leads. */}
+                  <div
+                    className="text-[15px] font-bold text-slate-50 tracking-wide break-words leading-relaxed"
                     dangerouslySetInnerHTML={{ __html: sanitizeTranslatedHtml(msg.translatedText) }}
                   />
 
-                  {/* Speaker replay button inside bubble */}
-                  <button
-                    onClick={() => onSpeak(msg.translatedText, msg.toLang)}
-                    title="音声を再再生"
-                    className="absolute right-3.5 bottom-3.5 p-2 rounded-xl bg-slate-950/60 border border-slate-800/80 text-slate-400 hover:text-slate-100 hover:bg-slate-900 transition-all hover:scale-105 cursor-pointer"
-                  >
-                    <Volume2 className="w-4 h-4" />
-                  </button>
+                  {/* What was actually said, kept available but out of the way. */}
+                  <div className="mt-2.5 pt-2.5 border-t border-white/5 flex items-end justify-between gap-3">
+                    <p className="text-[11px] text-slate-500 font-medium break-words leading-relaxed min-w-0">
+                      {msg.originalText}
+                    </p>
+                    <button
+                      onClick={() => onSpeak(msg.translatedText, msg.toLang)}
+                      title={t.replay}
+                      aria-label={t.replay}
+                      className={`p-1.5 rounded-lg shrink-0 transition-all hover:scale-110 active:scale-95 cursor-pointer ${
+                        isStaff
+                          ? 'text-slate-500 hover:text-indigo-300 hover:bg-indigo-500/10'
+                          : 'text-slate-500 hover:text-emerald-300 hover:bg-emerald-500/10'
+                      }`}
+                    >
+                      <Volume2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

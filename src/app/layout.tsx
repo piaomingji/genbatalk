@@ -9,28 +9,28 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://genbatalk.smart-ai-portal.com"),
-  title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
-  description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
+  metadataBase: new URL("https://genbatalk.vercel.app"),
+  title: "Talkie - Real-time voice translation",
+  description: "Real-time voice translation between any two languages. Speak naturally and be understood, in 17 languages.",
   openGraph: {
-    title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
-    description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
-    url: "https://genbatalk.smart-ai-portal.com",
-    siteName: "ゲンバトーク",
+    title: "Talkie - Real-time voice translation",
+    description: "Real-time voice translation between any two languages. Speak naturally and be understood, in 17 languages.",
+    url: "https://genbatalk.vercel.app",
+    siteName: "Talkie",
     images: [
       {
         url: "/icon.png",
         width: 512,
         height: 512,
-        alt: "ゲンバトーク App Icon",
+        alt: "Talkie App Icon",
       },
     ],
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "ゲンバトーク (GenbaTalk) - 現場専用AI同時通訳",
-    description: "建設現場・工場・倉庫で働く外国人労働者企業向けの、トランシーバー型リアルタイム音声通訳アプリ。",
+    title: "Talkie - Real-time voice translation",
+    description: "Real-time voice translation between any two languages. Speak naturally and be understood, in 17 languages.",
     images: ["/icon.png"],
   },
 };
@@ -41,7 +41,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ja" className={`${outfit.variable} h-full antialiased`}>
+    <html lang="en" className={`${outfit.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-slate-950 font-sans text-slate-100">
         {children}
       </body>

@@ -5,144 +5,124 @@ import { Settings, RefreshCw, Volume2, Sparkles, Mic, MicOff, Info, UserCheck, L
 import Timeline, { ChatMessage } from '@/components/Timeline';
 import SettingsModal from '@/components/SettingsModal';
 import AudioWave from '@/components/AudioWave';
-import PresetDrawer from '@/components/PresetDrawer';
-import { getGlossaryText } from '@/lib/glossary';
-
-export interface CustomGlossaryItem {
-  id: string;
-  ja: string;
-  translation: string;
-  lang: string;
-}
-
-export interface PresetItem {
-  id: string;
-  ja: string;
-  en: string;
-  vi: string;
-}
-
-const LANGUAGES = [
-  { code: 'ja', label: '日本語 🇯🇵' },
-  { code: 'vi', label: 'Tiếng Việt 🇻🇳' },
-  { code: 'en', label: 'English 🇺🇸' },
-  { code: 'ne', label: 'नेपाली 🇳🇵' },
-  { code: 'id', label: 'Bahasa Indonesia 🇮🇩' },
-  { code: 'tl', label: 'Tagalog 🇵🇭' },
-  { code: 'zh', label: '中文 🇨🇳' },
-  { code: 'ko', label: '한국어 🇰🇷' },
-  { code: 'pt', label: 'Português 🇵🇹' },
-  { code: 'es', label: 'Español 🇪🇸' },
-  { code: 'th', label: 'ภาษาไทย 🇹🇭' },
-  { code: 'ru', label: 'Русский 🇷🇺' },
-  { code: 'fr', label: 'Français 🇫🇷' },
-  { code: 'my', label: 'မြန်မာဘာသာ 🇲🇲' },
-  { code: 'si', label: 'සිංහල 🇱🇰' },
-  { code: 'km', label: 'ភាសាខ្មែរ 🇰🇭' },
-  { code: 'ur', label: 'اردو 🇵🇰' },
-];
-
-const BROWSER_LANG_MAP: Record<string, string> = {
-  ja: 'ja-JP',
-  vi: 'vi-VN',
-  en: 'en-US',
-  ne: 'ne-NP',
-  id: 'id-ID',
-  tl: 'fil-PH',
-  zh: 'zh-CN',
-  ko: 'ko-KR',
-  pt: 'pt-BR',
-  es: 'es-ES',
-  th: 'th-TH',
-  ru: 'ru-RU',
-  fr: 'fr-FR',
-  my: 'my-MM',
-  si: 'si-LK',
-  km: 'km-KH',
-  ur: 'ur-PK',
-};
-
-const MALE_VOICE_KEYWORDS = [
-  'male', 'man', 'guy', 'boy', 'gentleman', 'sir', 'mr.', 'otoya', 'koutarou', 
-  'ichiro', 'keita', 'minsu', 'kangkang', 'yunyang', 'alex', 'fred', 'daniel', 
-  'david', 'oliver', 'rishi', 'jorge', 'juan', 'diego', 'thomas', 'nicolas', 
-  'pavel', 'siri voice 2', 'siri voice 3', 'siri voice 4'
-];
-
-const DEFAULT_PRESETS: PresetItem[] = [
-  {
-    id: 'p1',
-    ja: "危ない！避難してください！",
-    en: "Danger! Please evacuate immediately!",
-    vi: "Nguy hiểm! Hãy sơ tán ngay lập tức!"
-  },
-  {
-    id: 'p2',
-    ja: "ヘルメットと安全帯を着用してください。",
-    en: "Please wear your safety helmet and safety harness.",
-    vi: "Hãy đội mũ bảo hiểm và đeo dây đai an toàn."
-  },
-  {
-    id: 'p3',
-    ja: "作業を一時中止してください。",
-    en: "Please temporarily stop your work.",
-    vi: "Hãy tạm dừng công việc."
-  },
-  {
-    id: 'p4',
-    ja: "体調は大丈夫ですか？無理しないでください。",
-    en: "Are you feeling okay? Don't overdo it.",
-    vi: "Sức khỏe của bạn vẫn tốt chứ? Đừng quá sức."
-  },
-  {
-    id: 'p5',
-    ja: "本日の作業は終了です。片付けをしてください。",
-    en: "Today's work is finished. Please tidy up.",
-    vi: "Công việc hôm nay kết thúc rồi. Hãy dọn dẹp đi."
-  }
-];
-
-// Collapse literally-repeated clauses. Gemini Live occasionally streams a stray repeat/
-// continuation of what it just said after a turn already looked complete; this trims exact
-// duplicate clauses without touching genuinely new content.
-function dedupClauses(text: string): string {
-  if (!text || text.length <= 10) return text;
-  const clauses = text.split(/(?<=[。！？!?，,.])/);
-  const seen = new Set<string>();
-  const filtered: string[] = [];
-  for (const clause of clauses) {
-    const normalized = clause.replace(/[\s，,。！？!?.]/g, '');
-    if (!normalized) continue;
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      filtered.push(clause);
-    }
-  }
-  return filtered.join('');
-}
+import { LiveTranslateSwitchboard, Utterance } from '@/lib/liveTranslate';
+import { detectUiLang, getStrings, UiLang } from '@/lib/i18n';
+import { LANGUAGES, languageName, normalizeLanguage, speechLocale } from '@/lib/languages';
 
 export default function Home() {
+  const [uiLang, setUiLang] = useState<UiLang>('en');
+  const t = getStrings(uiLang);
+
+  useEffect(() => {
+    setUiLang(detectUiLang());
+  }, []);
+
+  /** Each side is named by the language it speaks -- no roles, no assumed relationship. */
+  const langLabel = (code: string) => languageName(code);
+
+  /**
+   * Sets one side's language, swapping the other side away if it already held that language.
+   *
+   * Both sides ending up on the same language is not a cosmetic glitch: the sessions are then asked
+   * to translate a language into itself, and the app stops working entirely while looking like it
+   * is running. It happened by way of the auto-detect suggestion, so the rule is enforced here --
+   * in the one place that changes a language -- rather than relying on every caller to remember.
+   */
+  const setSideLanguage = (side: 'staff' | 'worker', code: string) => {
+    const currentThis = side === 'staff' ? staffLangRef.current : workerLangRef.current;
+    const currentOther = side === 'staff' ? workerLangRef.current : staffLangRef.current;
+    if (code === currentThis) return;
+
+    if (side === 'staff') {
+      staffLangRef.current = code;
+      setStaffLang(code);
+      if (currentOther === code) {
+        workerLangRef.current = currentThis;
+        setWorkerLang(currentThis);
+      }
+    } else {
+      workerLangRef.current = code;
+      setWorkerLang(code);
+      if (currentOther === code) {
+        staffLangRef.current = currentThis;
+        setStaffLang(currentThis);
+      }
+    }
+  };
+
+  /**
+   * "Did you speak X?" prompt.
+   *
+   * The button fixes the translation direction, which is what finally made the app reliable -- so
+   * a detected language must never quietly redirect the conversation on its own. A short
+   * recognition can easily be misread, and silently repointing a side would resurrect exactly the
+   * class of bug that took days to remove. Instead the detection is offered as a suggestion: it
+   * only ever writes to the language dropdown, which the user can change back by hand at any time.
+   */
+  const [langSuggestion, setLangSuggestion] = useState<{ side: 'staff' | 'worker'; code: string } | null>(null);
+  const dismissedSuggestionsRef = useRef<Set<string>>(new Set());
+  const suggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usageTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [limitReached, setLimitReached] = useState(false);
+
+  /**
+   * Reports translation time to the server every few seconds while the microphone is live.
+   *
+   * Reporting continuously rather than at the end means closing the tab mid-conversation still
+   * leaves the time accounted for -- otherwise the simplest way to use the service for free would
+   * be to never finish a session.
+   */
+  const startUsageReporting = () => {
+    if (usageTimerRef.current) return;
+    const REPORT_EVERY_MS = 10000;
+    usageTimerRef.current = setInterval(async () => {
+      if (!isListeningRef.current) return;
+      try {
+        const res = await fetch('/api/usage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seconds: REPORT_EVERY_MS / 1000 }),
+        });
+        const data = await res.json();
+        if (data?.exhausted) {
+          console.warn('Daily free allowance used up; stopping.');
+          setLimitReached(true);
+          shutdownSessions();
+        }
+      } catch {
+        // A failed report must never interrupt a conversation in progress.
+      }
+    }, REPORT_EVERY_MS);
+  };
+
+  const stopUsageReporting = () => {
+    if (usageTimerRef.current) {
+      clearInterval(usageTimerRef.current);
+      usageTimerRef.current = null;
+    }
+  };
+  const lastUtteranceRef = useRef<{
+    msgId: string;
+    originalText: string;
+    speaker: 'staff' | 'worker';
+  } | null>(null);
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isPresetOpen, setIsPresetOpen] = useState(false);
   const [useRuby, setUseRuby] = useState(true);
-  const [roomId, setRoomId] = useState('');
   
   // Custom Settings
   const [speechSpeed, setSpeechSpeed] = useState(1.0);
-  const [voiceGender, setVoiceGender] = useState<'male' | 'female'>('female');
   const [autoPlayAudio, setAutoPlayAudio] = useState(true);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [customGlossary, setCustomGlossary] = useState<CustomGlossaryItem[]>([]);
-  const [presets, setPresets] = useState<PresetItem[]>(DEFAULT_PRESETS);
 
   // Active Languages
-  const [staffLang, setStaffLang] = useState('ja');
-  const [workerLang, setWorkerLang] = useState('vi');
+  const [staffLang, setStaffLang] = useState('en');
+  const [workerLang, setWorkerLang] = useState('es');
 
   // Speaker Roles & Listening Status
   const [activeSpeaker, setActiveSpeaker] = useState<'staff' | 'worker'>('staff');
   const [isListening, setIsListening] = useState(false);
-  const [isHandsFree, setIsHandsFree] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [micPermissionError, setMicPermissionError] = useState<boolean>(false);
@@ -151,71 +131,83 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   // Speech Recognition / Audio Recording Refs
-  const recognitionRef = useRef<any>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSpeakerRef = useRef<'staff' | 'worker'>('staff');
-  const localMessageIdsRef = useRef<Set<string>>(new Set());
-  const hasSpokenRef = useRef<boolean>(false);
+  const workerLangRef = useRef<string>('es');
+  const staffLangRef = useRef<string>('en');
+  const availableVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  /**
+   * Live mirror of the user's settings.
+   *
+   * The translation sessions now stay open across a whole conversation, so the callbacks handed to
+   * them are created once and keep whatever values were in scope at that moment. Reading settings
+   * directly from that closure meant toggling furigana or switching the voice had no effect until
+   * the conversation was restarted. Everything that runs inside those long-lived callbacks reads
+   * from here instead.
+   */
+  const settingsRef = useRef({
+    useRuby: true,
+    speechSpeed: 1.0,
+    autoPlayAudio: true,
+  });
 
-  // Gemini Live API Refs
-  const wsRef = useRef<WebSocket | null>(null);
+
+
+  // Live Translation engine (a pair of one-way translation sessions; see lib/liveTranslate.ts)
+  const engineRef = useRef<LiveTranslateSwitchboard | null>(null);
+  const reconnectCountRef = useRef<number>(0);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const isListeningRef = useRef<boolean>(false);
-  const isHandsFreeRef = useRef<boolean>(false);
   const isSpeechPlayingRef = useRef<boolean>(false);
-  const isWaitingForTranslationRef = useRef<boolean>(false);
-  const audioBufferQueueRef = useRef<string[]>([]);
-  const accumulatedJsonTextRef = useRef<string>('');
-  const accumulatedInputTextRef = useRef<string>('');
-  const isEstablishingConnectionRef = useRef<boolean>(false);
+  const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMicClickRef = useRef<number>(0);
-  const isPresetSendingRef = useRef<boolean>(false);
-  const silenceCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const silenceCheckAudioCtxRef = useRef<AudioContext | null>(null);
-  const pendingResponseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentTurnMessageIdRef = useRef<string | null>(null);
-  const turnFinalizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const latestTurnAudioRef = useRef<{ text: string; lang: string } | null>(null);
 
   const setListeningState = (val: boolean) => {
     setIsListening(val);
     isListeningRef.current = val;
   };
 
-  const initAudioContext = () => {
-    if (typeof window !== 'undefined') {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioContextClass && !audioContextRef.current) {
-        audioContextRef.current = new AudioContextClass();
-      }
-      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume();
-      }
+  /**
+   * Returns a usable AudioContext, creating one if we don't have a live one.
+   *
+   * Two things made the old version fail with "AudioContext not initialized":
+   * a context that had already been closed was still held in the ref (so it was never replaced but
+   * could not be used), and start-up reads the ref again after several seconds of awaiting, by
+   * which point a stop may have cleared it. Always resolving through this function fixes both.
+   */
+  const ensureAudioContext = (): AudioContext | null => {
+    if (typeof window === 'undefined') return null;
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return null;
+
+    const existing = audioContextRef.current;
+    if (existing && existing.state !== 'closed') {
+      if (existing.state === 'suspended') existing.resume();
+      return existing;
     }
+    const ctx: AudioContext = new AudioContextClass();
+    audioContextRef.current = ctx;
+    return ctx;
   };
 
   // Load browser speechSynthesis voices asynchronously and store them in state
   useEffect(() => {
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       const loadVoices = () => {
-        setAvailableVoices(window.speechSynthesis.getVoices());
+        const voices = window.speechSynthesis.getVoices();
+        availableVoicesRef.current = voices;
+        setAvailableVoices(voices);
       };
       loadVoices();
       window.speechSynthesis.onvoiceschanged = loadVoices;
     }
   }, []);
 
-  // Persist settings (speed, gender, autoplay, ruby, presets) in localStorage across reloads
+  // Persist settings (speed, autoplay, ruby) in localStorage across reloads
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const savedGender = localStorage.getItem('genbatalk:voiceGender');
-      if (savedGender === 'male' || savedGender === 'female') {
-        setVoiceGender(savedGender);
-      }
       const savedSpeed = localStorage.getItem('genbatalk:speechSpeed');
       if (savedSpeed) {
         const parsed = parseFloat(savedSpeed);
@@ -229,30 +221,8 @@ export default function Home() {
       if (savedRuby !== null) {
         setUseRuby(savedRuby === 'true');
       }
-      const savedGlossary = localStorage.getItem('genbatalk:customGlossary');
-      if (savedGlossary) {
-        try {
-          setCustomGlossary(JSON.parse(savedGlossary));
-        } catch (e) {
-          console.error('Failed to parse saved custom glossary:', e);
-        }
-      }
-      const savedPresets = localStorage.getItem('genbatalk:presets');
-      if (savedPresets) {
-        try {
-          setPresets(JSON.parse(savedPresets));
-        } catch (e) {
-          console.error('Failed to parse saved presets:', e);
-        }
-      }
     }
   }, []);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('genbatalk:voiceGender', voiceGender);
-    }
-  }, [voiceGender]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -273,343 +243,218 @@ export default function Home() {
   }, [useRuby]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('genbatalk:customGlossary', JSON.stringify(customGlossary));
-    }
-  }, [customGlossary]);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('genbatalk:presets', JSON.stringify(presets));
-    }
-  }, [presets]);
-
-  // Reconnect WebSocket when workerLang changes to update translation instructions dynamically
-  useEffect(() => {
-    if (wsRef.current) {
-      console.warn('workerLang changed. Reconnecting WebSocket to update system instructions...');
-      const oldWs = wsRef.current;
-      oldWs.onclose = null; // Prevent onclose from toggling isListening state to false
-      try {
-        oldWs.close();
-      } catch (e) {}
-      wsRef.current = null;
-      
-      // If session is active, re-establish it immediately
-      if (isListeningRef.current) {
-        handleStartListen(activeSpeakerRef.current);
-      }
-    }
+    workerLangRef.current = workerLang;
   }, [workerLang]);
 
-  // Channel Sync Polling Effect
   useEffect(() => {
-    if (!roomId) return;
+    staffLangRef.current = staffLang;
+  }, [staffLang]);
 
-    const fetchInitial = async () => {
-      try {
-        const res = await fetch(`/api/channel?roomId=${encodeURIComponent(roomId)}`);
-        const data = await res.json();
-        if (data.success && data.messages) {
-          setMessages(data.messages);
-        }
-      } catch (e) {
-        console.error('Room init error:', e);
-      }
+  // The prompt disappears on its own; ignoring it must never block the conversation.
+  useEffect(() => {
+    if (!langSuggestion) return;
+    if (suggestionTimerRef.current) clearTimeout(suggestionTimerRef.current);
+    suggestionTimerRef.current = setTimeout(() => setLangSuggestion(null), 12000);
+    return () => {
+      if (suggestionTimerRef.current) clearTimeout(suggestionTimerRef.current);
     };
-    fetchInitial();
+  }, [langSuggestion]);
 
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/channel?roomId=${encodeURIComponent(roomId)}`);
-        const data = await res.json();
-        if (data.success && data.messages) {
-          const remoteMsgs = data.messages;
-          if (remoteMsgs.length > 0) {
-            const lastRemote = remoteMsgs[remoteMsgs.length - 1];
+  useEffect(() => {
+    settingsRef.current = {
+      useRuby,
+      speechSpeed,
+      autoPlayAudio,
+    };
+  }, [useRuby, speechSpeed, autoPlayAudio]);
 
-            setMessages(prev => {
-              const lastLocal = prev[prev.length - 1];
-
-              // If our own most recent message was generated locally but hasn't shown up in
-              // the server response yet (the POST that publishes it is fire-and-forget and
-              // can lose the race with this 1s poll), skip this tick instead of replacing
-              // local state with the still-stale remoteMsgs.
-              if (
-                lastLocal &&
-                localMessageIdsRef.current.has(lastLocal.id) &&
-                !remoteMsgs.some((m: any) => m.id === lastLocal.id)
-              ) {
-                return prev;
-              }
-
-              if (!lastLocal || lastRemote.id !== lastLocal.id) {
-                // Play audio if the new message was generated on a remote device
-                if (!localMessageIdsRef.current.has(lastRemote.id)) {
-                  playSpeech(lastRemote.translatedText, lastRemote.toLang);
-                }
-                return remoteMsgs;
-              }
-              return prev;
-            });
-          } else {
-            setMessages(prev => (prev.length > 0 ? [] : prev));
-          }
-        }
-      } catch (e) {
-        console.error('Sync polling error:', e);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [roomId, staffLang, workerLang, autoPlayAudio]);
-
-  const handlePresetSelect = async (text: string) => {
-    // Guard against duplicate invocations -- e.g. a double-tap on the preset button firing
-    // onSelectPreset twice before the drawer closes, which used to send two independent
-    // /api/translate requests for the same phrase and produce two (slightly different, since
-    // each is an independent AI call) message bubbles for what the user considered one tap.
-    if (isPresetSendingRef.current) {
-      console.warn('handlePresetSelect: a request is already in flight, ignoring duplicate call.');
-      return;
+  // The worker's language is baked into each translation session at connect time, so changing it
+  // mid-conversation means rebuilding the pair. Tear down and start again only if we were live.
+  useEffect(() => {
+    if (!engineRef.current) return;
+    // Both target languages are baked into the sessions when they connect, so a change on EITHER
+    // side means rebuilding the pair. Watching only the worker's language left the sessions still
+    // translating into the old language after the other side was switched.
+    console.warn('Language changed. Rebuilding translation sessions...');
+    const wasListening = isListeningRef.current;
+    const speaker = activeSpeakerRef.current;
+    shutdownSessions();
+    if (wasListening) {
+      handleStartListen(speaker);
     }
-    isPresetSendingRef.current = true;
+  }, [workerLang, staffLang]);
 
-    const speaker = 'staff'; // Presets are always supervisor instructions
-    const from = staffLang;
-    const to = workerLang;
+  // NOTE: there is no voice-activity detection on this side any more, and no turn handling either.
+  // Translation runs as a continuous stream (see lib/liveTranslate.ts); utterances are grouped by a
+  // short quiet period inside the engine. The old client-side volume detector and turn bookkeeping
+  // were the source of the duplicate bubbles, empty turns and stuck-listening freezes.
 
+  // Applies furigana to a Japanese translation. Best-effort: on any failure we keep the plain text
+  // rather than delaying or dropping the message.
+  const withFurigana = async (text: string, langCode: string): Promise<string> => {
+    if (!settingsRef.current.useRuby || langCode !== 'ja' || !text) return text;
     try {
-      const res = await fetch('/api/translate', {
+      const res = await fetch('/api/furigana', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, fromLang: from, toLang: to, useRuby, customGlossary }),
+        body: JSON.stringify({ text }),
       });
+      if (!res.ok) return text;
       const data = await res.json();
-      
-      if (data.success) {
-        const newMsg: ChatMessage = {
-          id: Math.random().toString(36).substring(7),
-          sender: speaker,
-          originalText: text,
-          translatedText: data.translatedText,
-          fromLang: from,
-          toLang: to,
-          timestamp: new Date(),
-        };
-
-        localMessageIdsRef.current.add(newMsg.id);
-        setMessages(prev => {
-          const updated = [...prev, newMsg];
-          if (roomId) {
-            fetch('/api/channel', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ roomId, messages: updated }),
-            }).catch(console.error);
-          }
-          return updated;
-        });
-
-        if (autoPlayAudio) {
-          playSpeech(data.translatedText, to);
-        }
-      }
-    } catch (e) {
-      console.error('Preset play error:', e);
-    } finally {
-      isPresetSendingRef.current = false;
+      return data?.text || text;
+    } catch {
+      return text;
     }
   };
-  const checkSilence = (stream: MediaStream) => {
-    // A previous call's silence-detection timer/AudioContext must never be left running when a
-    // new one starts. If it was, two VAD timers could end up watching the same microphone at
-    // once, and each one independently declares "silence detected" and sends its own turnComplete
-    // to Gemini for what the user considers a single utterance -- producing duplicate/garbled
-    // replies. Always tear down whatever is currently tracked before creating a new timer.
-    if (silenceCheckIntervalRef.current !== null) {
-      clearInterval(silenceCheckIntervalRef.current);
-      silenceCheckIntervalRef.current = null;
-    }
-    if (silenceCheckAudioCtxRef.current) {
-      try { silenceCheckAudioCtxRef.current.close(); } catch (e) {}
-      silenceCheckAudioCtxRef.current = null;
-    }
 
+  /**
+   * Applies site terminology to a finished translation.
+   *
+   * The Live Translation model accepts no instructions, so terminology rules ("免許証" -> 驾照,
+   * "ヘルメット" -> 安全帽) never reach it. This pass adds them back.
+   *
+   * Note what it does NOT do: re-translate. An earlier version translated the transcript again from
+   * scratch, and because the transcript is less accurate than the audio the live model works from,
+   * it could invert the meaning outright -- a spoken "元気を感じない" was transcribed as
+   * "元気を感じてる", and the re-translation confidently said the worker still had energy while the
+   * original translation had correctly said they had none. The existing translation is now treated
+   * as authoritative and only its wording is adjusted.
+   *
+   * Strictly best-effort: any failure or suspicious-looking answer leaves the translation alone.
+   */
+  const refineTranslation = async (u: Utterance): Promise<string | null> => {
+    const draft = u.translatedText.trim();
+    if (!draft) return null;
     try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContextClass) return;
-      const audioContext = new AudioContextClass();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
+      const res = await fetch('/api/polish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: u.originalText.trim(),
+          draft,
+          fromLang: u.fromLang,
+          toLang: u.toLang,
+          useRuby: settingsRef.current.useRuby,
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const polished: string | undefined = data?.text;
+      if (!polished) return null;
 
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
+      const cleaned = polished.trim();
+      if (!cleaned || cleaned === draft) return null;
 
-      const startTime = Date.now();
-      let lastSoundTime = Date.now();
-      const rmsThreshold = 0.012; // Lowered from 0.025 to be much more sensitive to quiet speech
-      const silenceDuration = isHandsFreeRef.current ? 3000 : 2500; // 3.0s for Hands-free, 2.5s for manual to prevent cutting off early
-
-      const intervalId = setInterval(() => {
-        if (!isListeningRef.current) {
-          clearInterval(intervalId);
-          audioContext.close();
-          if (silenceCheckIntervalRef.current === intervalId) {
-            silenceCheckIntervalRef.current = null;
-            silenceCheckAudioCtxRef.current = null;
-          }
-          return;
-        }
-
-        // In hands-free mode, bypass client-side VAD checking.
-        // We rely on Gemini's highly optimized server-side VAD to detect turn completions.
-        if (isHandsFreeRef.current) {
-          return;
-        }
-
-        // If TTS is playing, ignore silence checking and reset timer
-        if (isSpeechPlayingRef.current) {
-          lastSoundTime = Date.now();
-          return;
-        }
-
-        analyser.getByteTimeDomainData(dataArray);
-        
-        // Calculate RMS (average sound energy) instead of peak maxVal to ignore random clicks/static
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          const val = (dataArray[i] - 128) / 128;
-          sum += val * val;
-        }
-        const rms = Math.sqrt(sum / bufferLength);
-
-        const elapsed = Date.now() - startTime;
-        if (rms > rmsThreshold) {
-          lastSoundTime = Date.now();
-          // Ignore initial microphone activation click/pop noise in first 600ms
-          if (elapsed > 600) {
-            hasSpokenRef.current = true;
-          }
-        } else {
-          if (Date.now() - lastSoundTime > silenceDuration) {
-            console.warn('VAD: Silence detected.');
-            if (isHandsFreeRef.current) {
-              if (hasSpokenRef.current) {
-                // Send turnComplete without stopping recording!
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                  beginWaitingForResponse();
-                  wsRef.current.send(JSON.stringify({
-                    clientContent: {
-                      turnComplete: true
-                    }
-                  }));
-                  console.warn('VAD: Sent clientContent turnComplete to Gemini (Hands-Free)');
-                  setInterimTranscript('翻訳中...');
-                }
-                hasSpokenRef.current = false; // Reset speech flag for next turn
-              }
-              // In hands-free mode, reset the timer and keep the interval alive!
-              lastSoundTime = Date.now();
-            } else {
-              clearInterval(intervalId);
-              if (silenceCheckIntervalRef.current === intervalId) {
-                silenceCheckIntervalRef.current = null;
-                silenceCheckAudioCtxRef.current = null;
-              }
-              if (hasSpokenRef.current) {
-                stopRecording();
-              } else {
-                console.warn('VAD: User did not speak. Cancelling session.');
-                handleStopListen();
-              }
-              audioContext.close();
-            }
-          }
-        }
-      }, 100);
-
-      silenceCheckIntervalRef.current = intervalId;
-      silenceCheckAudioCtxRef.current = audioContext;
-    } catch (e) {
-      console.error('VAD initialization failed:', e);
-    }
-  };
-
-
-  const downsampleBuffer = (buffer: Float32Array, inputSampleRate: number, outputSampleRate: number = 16000) => {
-    if (inputSampleRate === outputSampleRate) {
-      return new Int16Array(buffer.map(v => Math.max(-1, Math.min(1, v)) * 0x7FFF));
-    }
-    const sampleRateRatio = inputSampleRate / outputSampleRate;
-    const newLength = Math.round(buffer.length / sampleRateRatio);
-    const result = new Int16Array(newLength);
-    let offsetResult = 0;
-    let offsetBuffer = 0;
-    while (offsetResult < result.length) {
-      const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
-      let accum = 0;
-      let count = 0;
-      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-        accum += buffer[i];
-        count++;
+      // A terminology pass should not change the length much. A wild swing means it rewrote or
+      // re-translated rather than corrected, so keep the original.
+      const strip = (t: string) => t.replace(/<[^>]*>/g, '');
+      const a = strip(draft).length;
+      const b = strip(cleaned).length;
+      if (a > 0 && (b > a * 1.8 || b < a * 0.55)) {
+        console.warn('polish rejected (length changed too much):', draft, '=>', cleaned);
+        return null;
       }
-      result[offsetResult] = Math.max(-1, Math.min(1, accum / (count || 1))) * 0x7FFF;
-      offsetResult++;
-      offsetBuffer = nextOffsetBuffer;
+      return cleaned;
+    } catch {
+      return null;
     }
-    return result;
   };
 
-  // While we're waiting for Gemini's response to a completed turn, block starting a new
-  // recording. Without this, tapping the mic again before the previous reply finished streaming
-  // in would reset the shared accumulator refs mid-stream and mix the old answer's leftover text
-  // into the new utterance. A safety timeout guarantees the mic never gets stuck locked if a
-  // response never arrives (e.g. a dropped connection).
-  const beginWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = true;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-    }
-    pendingResponseTimeoutRef.current = setTimeout(() => {
-      console.warn('No response from Gemini within 15s, releasing the mic lock.');
-      isWaitingForTranslationRef.current = false;
-      pendingResponseTimeoutRef.current = null;
-      setNetworkError('⚠️ 応答がありませんでした。もう一度お試しください。');
-      setTimeout(() => setNetworkError(null), 5000);
-    }, 15000);
-  };
+  /**
+   * Puts a finished utterance on screen, then improves it in place.
+   *
+   * The translation itself is already in hand the moment this is called, so it goes up immediately.
+   * The two follow-up passes -- furigana and proofreading -- used to run one after the other BEFORE
+   * anything was displayed, which put two network round trips between the end of a sentence and any
+   * visible response. They now run at the same time as each other, and behind the message rather
+   * than in front of it.
+   */
+  const appendUtterance = async (u: Utterance) => {
+    const msgId = Math.random().toString(36).substring(7);
+    lastUtteranceRef.current = { msgId, originalText: u.originalText.trim(), speaker: u.speaker };
 
-  const endWaitingForResponse = () => {
-    isWaitingForTranslationRef.current = false;
-    if (pendingResponseTimeoutRef.current) {
-      clearTimeout(pendingResponseTimeoutRef.current);
-      pendingResponseTimeoutRef.current = null;
+    // Straight to the screen -- nothing is awaited before this point.
+    setMessages(prev => [
+      ...prev,
+      {
+        id: msgId,
+        sender: u.speaker,
+        originalText: u.originalText || langLabel(u.fromLang),
+        translatedText: u.translatedText,
+        fromLang: u.fromLang,
+        toLang: u.toLang,
+        timestamp: new Date(),
+      },
+    ]);
+
+    // Speak straight away, from exactly the text that is on screen.
+    //
+    // Waiting for the refinements first meant the voice started two or three network round trips
+    // after the words appeared, which is a long silence in the middle of a conversation. The
+    // refinements only ever adjust wording, so starting from the translation as spoken by the model
+    // is faithful; if a refinement lands later it quietly updates the text, and the audio the
+    // listener already heard still matched what was shown at the time.
+    if (settingsRef.current.autoPlayAudio) {
+      playSpeech(u.translatedText, u.toLang);
+      // The turn is over the moment the app starts speaking.
+      //
+      // The microphone is muted while a translation is read out, so leaving the turn open looked
+      // active without being able to hear anything -- the button stayed lit for a few seconds after
+      // the translation appeared, doing nothing. Closing it here makes the button match reality.
+      if (isListeningRef.current) {
+        handleStopListen();
+      }
+    }
+
+    // Both refinements at once, behind the message rather than in front of it.
+    const [refined, ruby] = await Promise.all([
+      refineTranslation(u),
+      withFurigana(u.translatedText, u.toLang),
+    ]);
+
+    const settled = refined && refined !== u.translatedText ? refined : u.translatedText;
+    // Furigana was computed from the unrefined wording, so it only applies if proofreading left the
+    // wording alone.
+    const finalText = settled === u.translatedText ? ruby : await withFurigana(settled, u.toLang);
+
+    if (finalText !== u.translatedText) {
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === msgId);
+        if (idx === -1) return prev;
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], translatedText: finalText };
+        return updated;
+      });
     }
   };
 
   const handleStartListen = async (speaker: 'staff' | 'worker') => {
-    if (isWaitingForTranslationRef.current) {
-      console.warn('handleStartListen: still waiting for the previous turn\'s response, ignoring new start.');
-      return;
-    }
-    initAudioContext();
+    // Created up front so it happens inside the click handler, which is what browsers require.
+    ensureAudioContext();
     setMicPermissionError(false);
     setActiveSpeaker(speaker);
     activeSpeakerRef.current = speaker;
-    setInterimTranscript('接続を開始しています...');
-    hasSpokenRef.current = false;
     setListeningState(true);
-    accumulatedJsonTextRef.current = '';
-    accumulatedInputTextRef.current = '';
-    currentTurnMessageIdRef.current = null;
-    if (turnFinalizeTimeoutRef.current) {
-      clearTimeout(turnFinalizeTimeoutRef.current);
-      turnFinalizeTimeoutRef.current = null;
+
+    // If the microphone, the audio graph and both sessions are all still up from the last turn --
+    // which is the normal case now that nothing is torn down between turns -- start capturing
+    // immediately. Waiting for the async path below is what made the first second of speech go
+    // missing unless the user waited for the status text to change.
+    const warm =
+      engineRef.current?.isOpen &&
+      scriptProcessorRef.current &&
+      audioStreamRef.current?.active &&
+      audioContextRef.current?.state === 'running';
+
+    if (warm) {
+      engineRef.current!.setActiveSpeaker(speaker);
+      setInterimTranscript(t.listening);
+      reconnectCountRef.current = 0;
+      startUsageReporting();
+      return;
     }
-    latestTurnAudioRef.current = null;
+
+    setInterimTranscript(t.connecting);
 
     try {
       let stream = audioStreamRef.current;
@@ -618,489 +463,210 @@ export default function Home() {
         audioStreamRef.current = stream;
       }
 
-      // Check if WebSocket is already open and reuse it!
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        console.warn('Reusing existing open WebSocket connection.');
-        setInterimTranscript('聞き取り中...');
+      // Both directions stay connected for the whole conversation; the button only decides which of
+      // them the microphone is handed to. Rebuilding a session per turn is what was eating the
+      // first moment of each utterance and resetting context every time the speaker changed.
+      if (!engineRef.current || !engineRef.current.isOpen) {
+        engineRef.current?.stop();
+        const board = new LiveTranslateSwitchboard(staffLang, workerLang, {
+          onInterim: ({ original, translated }) => {
+            // Once the user has pressed stop we are showing "翻訳しています..."; late partial
+            // results arriving after that should not flash the listening view back up.
+            if (!isListeningRef.current) return;
+            setInterimTranscript(translated || original);
+          },
+          onUtterance: (u) => {
+            if (statusWatchdogRef.current) {
+              clearTimeout(statusWatchdogRef.current);
+              statusWatchdogRef.current = null;
+            }
+            setInterimTranscript('');
+            appendUtterance(u);
+          },
+          onTurnEnded: () => {
+            // The speaker stopped talking, so end their turn for them -- no second tap needed.
+            // Only the timing is automatic here; the direction was fixed when the button was
+            // pressed, so an early or late cut costs a moment, never a scrambled conversation.
+            if (isListeningRef.current) {
+              console.warn('turn ended automatically');
+              handleStopListen();
+            }
+          },
+          onDetectedLanguage: (who, bcp47) => {
+            const code = normalizeLanguage(bcp47);
+            if (!code) return;
 
-        const actx = audioContextRef.current;
-        if (!actx) throw new Error('AudioContext not initialized');
+            const expected = who === 'staff' ? staffLangRef.current : workerLangRef.current;
+            if (code === expected) return;
 
-        if (mediaSourceRef.current) {
-          try { mediaSourceRef.current.disconnect(); } catch(e){}
-        }
-        if (scriptProcessorRef.current) {
-          try { scriptProcessorRef.current.disconnect(); } catch(e){}
-        }
+            // Note: the detected language matching the OTHER side is NOT skipped. Only the side
+            // holding the microphone is fed any audio, so this is not "the other person replying" --
+            // it means the wrong button was pressed, which is exactly when help is wanted.
+            const key = `${who}:${code}`;
+            if (dismissedSuggestionsRef.current.has(key)) return;
 
-        const source = actx.createMediaStreamSource(stream);
-        mediaSourceRef.current = source;
+            console.warn(`detected ${bcp47} on the ${who} side (set to ${expected})`);
+            setLangSuggestion({ side: who, code });
+          },
+          onError: (message) => {
+            setNetworkError(`⚠️ ${message}`);
+            setTimeout(() => setNetworkError(null), 6000);
+          },
+          onClose: () => {
+            setListeningState(false);
+            setInterimTranscript('');
+          },
+        });
+        engineRef.current = board;
+        await board.start();
+      }
 
-        const processor = actx.createScriptProcessor(2048, 1, 1);
-        scriptProcessorRef.current = processor;
+      // Hand the microphone to whichever side pressed the button.
+      engineRef.current.setActiveSpeaker(speaker);
 
-        source.connect(processor);
-        processor.connect(actx.destination);
-
-        let chunksSent = 0;
-        const ws = wsRef.current;
-        processor.onaudioprocess = (e) => {
-          if (!isListeningRef.current) return;
-          if (isSpeechPlayingRef.current || isWaitingForTranslationRef.current) return;
-          const inputData = e.inputBuffer.getChannelData(0);
-          const int16Buffer = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-          }
-          let binary = '';
-          const bytes = new Uint8Array(int16Buffer.buffer);
-          const len = bytes.byteLength;
-          for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          const base64PCM = window.btoa(binary);
-          
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              realtimeInput: {
-                audio: {
-                  mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                  data: base64PCM
-                }
-              }
-            }));
-            chunksSent++;
-          }
-        };
-
-        checkSilence(stream);
+      // Opening the sessions takes a moment. If the user hit stop in the meantime, don't go on to
+      // wire up a microphone for a session nobody asked for any more.
+      if (!isListeningRef.current) {
+        console.warn('Start was cancelled while connecting; not attaching the microphone.');
         return;
       }
 
-      if (isEstablishingConnectionRef.current) {
-        // A previous invocation (e.g. from a duplicate click/tap event) is already in the
-        // middle of fetching a token and opening a WebSocket. Bail out instead of racing it --
-        // otherwise both would eventually assign wsRef.current and we'd end up with two live
-        // sessions both listening to the same microphone.
-        console.warn('handleStartListen: connection already being established, ignoring duplicate call.');
-        return;
+      setInterimTranscript(t.listening);
+      reconnectCountRef.current = 0;
+      startUsageReporting();
+
+      const actx = ensureAudioContext();
+      if (!actx) throw new Error('この端末では音声機能を利用できません。');
+
+      if (mediaSourceRef.current) {
+        try { mediaSourceRef.current.disconnect(); } catch (e) {}
+        mediaSourceRef.current = null;
       }
-      isEstablishingConnectionRef.current = true;
-
-      const tokenRes = await fetch('/api/session-token', { method: 'POST' });
-      if (!tokenRes.ok) {
-        throw new Error('使い捨てトークンの取得に失敗しました。');
+      if (scriptProcessorRef.current) {
+        try { scriptProcessorRef.current.disconnect(); } catch (e) {}
+        scriptProcessorRef.current = null;
       }
-      const tokenData = await tokenRes.json();
-      const token = tokenData.token;
 
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${token}`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-      isEstablishingConnectionRef.current = false;
-
-      audioBufferQueueRef.current = []; // Clear buffer queue on start
-
-      ws.onopen = () => {
-        console.warn('Gemini Live API WebSocket connection established.');
-        setInterimTranscript('聞き取り中...');
-        
-        const to = speaker === 'staff' ? workerLang : staffLang;
-        const customGlossaryPrompt = customGlossary && customGlossary.length > 0
-          ? customGlossary
-              .filter((item: any) => item.ja && item.translation && item.lang)
-              .map((item: any) => `- "${item.ja}" (ja) <-> "${item.translation}" (${item.lang}) (Translate bidirectionally. When translating to Japanese, always use "${item.ja}")`)
-              .join('\n')
-          : '';
-        
-        const glossaryText = getGlossaryText('ja', workerLang) + '\n' + getGlossaryText(workerLang, 'ja') + '\n' + (customGlossaryPrompt ? `\nCompany-Specific Glossary (You must prioritize these translations):\n${customGlossaryPrompt}` : '');
-        
-        const contextStr = 'Context: This is a real-time conversation at a construction site, factory, or industrial workplace between a Japanese supervisor and a foreign worker. Use appropriate industry terminology (e.g., safety harness, curing, helmet) and ensure the translation is clear, polite, and natural for workplace communication.\n' +
-          'Nuance Guidelines:\n' +
-          '- Translate Japanese "免許証" or "免許" (referring to qualifications) to "驾照" (driver\'s license) or "资格证/操作证" (qualification/operation certificate) in Chinese (do not use generic "执照").\n' +
-          '- Translate Chinese "驾照" or "驾驶证" back to Japanese specifically as "免許証" (or "運転免許証"), not generic "免許".\n' +
-          '- Translate Japanese "ヘルメット" to "安全帽" in Chinese, and "mũ bảo hộ" or "nón bảo hộ" in Vietnamese (do not use "头盔" or "mũ bảo hiểm").\n' +
-          '- Chinese "还不错" or "还不错吧" (spoken by a worker to a supervisor) should be translated politely as "悪くないですね", "問題なさそうです", or "順調です".\n' +
-          '- Translate Chinese "我很饿" or "饿了" (I am hungry) to natural Japanese "お腹が空いています" (with correct ruby: <ruby>お腹<rt>おなか</rt></ruby>が<ruby>空<rt>す</rt></ruby>いています) rather than literal "私はとてもお腹が空いています".\n' +
-          '- For extremely short responses or confirmations (e.g. "예" (ko), "네" (ko), "对" (zh), "yes" (en), "ok" (en), etc.), translate them simply and directly to the equivalent confirmation in the target language (e.g., to Japanese "はい" or "了解しました"). NEVER expand them into long sentences or guess safety warnings.\n' +
-          'CRITICAL: You are a strict translator. You must ONLY output the translated text. NEVER explain the meaning of the input, NEVER reply, NEVER add warnings or corrections, and NEVER output any conversational comments or advice.';
-
-        let instruction = `${contextStr}\n${glossaryText}\n\n` +
-          `You are a bidirectional real-time translator between Japanese ("ja") and multiple foreign languages (including Chinese, Vietnamese, Korean, English, Tagalog, Indonesian, Nepali, Burmese, etc.).\n` +
-          `Listen to the spoken audio:\n` +
-          `1. If the speaker speaks Japanese ("ja"), translate it to the target language "${workerLang}".\n` +
-          `2. If the speaker speaks ANY foreign language (e.g., Chinese, Vietnamese, Korean, English, Tagalog, Indonesian, Nepali, Burmese, etc.), translate it strictly to Japanese ("ja").\n` +
-          `Output ONLY the translated text. Do not add any prefixes, explanations, or conversational filler.\n` +
-          `CRITICAL: If the input audio is silent, contains only static, noise, background sounds, or incomprehensible whispers, you must output ABSOLUTELY NOTHING. Do not guess, do not try to translate.\n` +
-          (useRuby ? `\nWhen translating to Japanese, format all kanji characters with HTML ruby tags for furigana (e.g., <ruby>私<rt>わたし</rt></ruby>は<ruby>行<rt>い</rt></ruby>きます). Ensure that every <rt> tag is properly closed with a matching </rt> tag and wrapped in <ruby> tags. Only add ruby tags to Kanji characters. NEVER add ruby tags to Hiragana, Katakana, punctuation, numbers, or English letters.` : '') +
-          `\nAlways detect the spoken language. If translating to Japanese ("ja"), add a new line at the end with the detected 2-letter language code of the speaker in square brackets (e.g. "[zh]", "[vi]", "[en]", "[ko]", "[id]", "[tl]", "[ne]", "[my]").`;
-
-        ws.send(JSON.stringify({
-          setup: {
-            model: "models/gemini-3.1-flash-live-preview",
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              temperature: 0.0
-            },
-            systemInstruction: {
-              parts: [{ text: instruction }]
-            },
-            output_audio_transcription: {},
-            input_audio_transcription: {},
-            outputAudioTranscription: {},
-            inputAudioTranscription: {}
-          }
-        }));
-        
-        
-        // Start silence detection only after WebSocket connection is open!
-        checkSilence(stream);
-      };
-
-      ws.onmessage = async (event) => {
-        try {
-          let textData = '';
-          if (event.data instanceof Blob) {
-            textData = await event.data.text();
-          } else if (typeof event.data === 'string') {
-            textData = event.data;
-          } else {
-            console.warn('Received unknown binary frame');
-            return;
-          }
-          const response = JSON.parse(textData);
-
-          if (!isListeningRef.current && !isWaitingForTranslationRef.current) {
-            // We're not in an active recording or awaiting-response window at all (the turn was
-            // already fully finalized a while ago). Anything arriving now is a very late
-            // straggler from a finished turn -- ignore it rather than risk creating/mutating a
-            // message bubble well after the fact.
-            return;
-          }
-
-          if (response.serverContent?.modelTurn?.parts) {
-            for (const part of response.serverContent.modelTurn.parts) {
-              if (part.text) {
-                accumulatedJsonTextRef.current += part.text;
-                console.warn('Received Live Translate text chunk:', part.text);
-              }
-            }
-          }
-          if (response.serverContent?.outputTranscription?.text) {
-            accumulatedJsonTextRef.current += response.serverContent.outputTranscription.text;
-            console.warn('Received Live Translate text chunk (transcription):', response.serverContent.outputTranscription.text);
-            const cleanText = accumulatedJsonTextRef.current
-              .replace(/<ruby>[^<]*<rt>([^<]*)(<\/rt>)?(<\/ruby>)?/g, '$1')
-              .replace(/<[^>]*>/g, '')
-              .replace(/\[[a-z]{2}\]/gi, '')
-              .trim();
-            setInterimTranscript(`翻訳中: ${cleanText}`);
-          }
-          if (response.serverContent?.inputTranscription?.text) {
-            accumulatedInputTextRef.current += response.serverContent.inputTranscription.text;
-            console.warn('Received User Input text chunk (transcription):', response.serverContent.inputTranscription.text);
-            const cleanText = accumulatedInputTextRef.current
-              .replace(/<ruby>[^<]*<rt>([^<]*)(<\/rt>)?(<\/ruby>)?/g, '$1')
-              .replace(/<[^>]*>/g, '')
-              .replace(/\[[a-z]{2}\]/gi, '')
-              .trim();
-            setInterimTranscript(`認識中: ${cleanText}`);
-          }
-
-          if (response.serverContent?.turnComplete) {
-            // Gemini does not reliably send exactly one turnComplete per utterance -- sometimes
-            // the first one arrives before the answer has finished streaming (so it's truncated),
-            // and sometimes it sends an extra one afterward that just repeats/continues what it
-            // already said. Rather than guessing which single event is "the real answer" (which
-            // either duplicated or truncated messages depending on which case happened), always
-            // update the SAME message bubble for this recording with whatever has accumulated so
-            // far, and only actually finish the turn (release the mic, play audio) after a short
-            // quiet period with no further activity from the server.
-            if (turnFinalizeTimeoutRef.current) {
-              clearTimeout(turnFinalizeTimeoutRef.current);
-              turnFinalizeTimeoutRef.current = null;
-            }
-            console.warn('Gemini turn complete signal. Accumulated so far:', accumulatedJsonTextRef.current);
-
-             try {
-              let translation = accumulatedJsonTextRef.current.trim();
-              let detected = workerLang;
-
-                // Parse format "[ko]" at the end (with or without newline)
-                const match = translation.match(/([\s\S]*?)\[([a-z]{2})\]\s*$/i);
-                if (match) {
-                  detected = match[2].toLowerCase();
-                }
-                // Strip all language code brackets from the translation text to prevent leaks
-                translation = translation.replace(/\[[a-z]{2}\]/gi, '').trim();
-
-              // Remove markdown code block backticks if any
-              if (translation.startsWith('```')) {
-                translation = translation.replace(/^```[a-zA-Z]*\n?/, '');
-              }
-              if (translation.endsWith('```')) {
-                translation = translation.substring(0, translation.length - 3);
-              }
-              translation = dedupClauses(translation.trim());
-
-              if (translation) {
-                const to = activeSpeakerRef.current === 'staff' ? workerLang : staffLang;
-
-                if (activeSpeakerRef.current === 'worker' && detected && detected !== 'ja' && ['vi', 'en', 'ne', 'id', 'tl', 'zh', 'ko', 'pt', 'es', 'th', 'ru', 'fr', 'my', 'si', 'km', 'ur'].includes(detected)) {
-                  console.warn(`VAD: Automatically detected worker language as: ${detected}`);
-                  setWorkerLang(detected);
-                }
-
-                const fromLang = activeSpeakerRef.current === 'staff' ? staffLang : detected;
-                const toLang = activeSpeakerRef.current === 'staff' ? workerLang : 'ja';
-                const originalText = accumulatedInputTextRef.current.trim() || (activeSpeakerRef.current === 'staff' ? '音声指示 (日本語)' : '音声回答 (外国語)');
-
-                setMessages(prev => {
-                  const existingIndex = currentTurnMessageIdRef.current
-                    ? prev.findIndex(m => m.id === currentTurnMessageIdRef.current)
-                    : -1;
-
-                  let updated: ChatMessage[];
-                  let msgId: string;
-                  if (existingIndex !== -1) {
-                    msgId = prev[existingIndex].id;
-                    updated = [...prev];
-                    updated[existingIndex] = { ...updated[existingIndex], originalText, translatedText: translation, fromLang, toLang };
-                  } else {
-                    msgId = Math.random().toString(36).substring(7);
-                    localMessageIdsRef.current.add(msgId);
-                    updated = [...prev, {
-                      id: msgId,
-                      sender: activeSpeakerRef.current,
-                      originalText,
-                      translatedText: translation,
-                      fromLang,
-                      toLang,
-                      timestamp: new Date(),
-                    }];
-                  }
-                  currentTurnMessageIdRef.current = msgId;
-
-                  if (roomId) {
-                    fetch('/api/channel', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ roomId, messages: updated }),
-                    }).catch(console.error);
-                  }
-                  return updated;
-                });
-
-                latestTurnAudioRef.current = { text: translation, lang: to };
-              }
-            } catch (err) {
-              console.error('Failed to parse final translation JSON:', err, accumulatedJsonTextRef.current);
-            }
-
-            turnFinalizeTimeoutRef.current = setTimeout(() => {
-              turnFinalizeTimeoutRef.current = null;
-              currentTurnMessageIdRef.current = null;
-              endWaitingForResponse();
-
-              if (autoPlayAudio && latestTurnAudioRef.current) {
-                playSpeech(latestTurnAudioRef.current.text, latestTurnAudioRef.current.lang);
-              }
-              latestTurnAudioRef.current = null;
-
-              if (isHandsFreeRef.current) {
-                accumulatedJsonTextRef.current = '';
-                accumulatedInputTextRef.current = '';
-                // Toggle speaker automatically for next turn
-                const nextSpeaker = activeSpeakerRef.current === 'staff' ? 'worker' : 'staff';
-                setActiveSpeaker(nextSpeaker);
-                activeSpeakerRef.current = nextSpeaker;
-                setInterimTranscript('聞き取り中...');
-              } else {
-                handleStopListen();
-              }
-            }, 1200);
-          }
-        } catch (e) {
-          console.error('Error handling WebSocket message:', e);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.error('WebSocket Error:', e);
-        setNetworkError('⚠️ 通信エラーが発生しました。接続状況を確認し、もう一度お試しください。');
-        setTimeout(() => setNetworkError(null), 6000);
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
-        handleStopListen();
-      };
-
-      ws.onclose = () => {
-        console.warn('Gemini Live API WebSocket connection closed.');
-        if (turnFinalizeTimeoutRef.current) {
-          clearTimeout(turnFinalizeTimeoutRef.current);
-          turnFinalizeTimeoutRef.current = null;
-        }
-        currentTurnMessageIdRef.current = null;
-        endWaitingForResponse();
-        setIsListening(false);
-        setInterimTranscript('');
-      };
-
-      const actx = audioContextRef.current;
-      if (!actx) {
-        throw new Error('AudioContext not initialized');
-      }
-      
       const source = actx.createMediaStreamSource(stream);
       mediaSourceRef.current = source;
 
       const processor = actx.createScriptProcessor(2048, 1, 1);
       scriptProcessorRef.current = processor;
-
-      // Connect them immediately under the direct user interaction click handler to avoid Chrome's async resume blocks
       source.connect(processor);
       processor.connect(actx.destination);
 
-      let chunksSent = 0;
       processor.onaudioprocess = (e) => {
         if (!isListeningRef.current) return;
-        if (isSpeechPlayingRef.current || isWaitingForTranslationRef.current) return;
+        // Never feed our own spoken translation back into the microphone.
+        if (isSpeechPlayingRef.current) return;
 
-        const inputData = e.inputBuffer.getChannelData(0);
-        // Convert Float32 native samples to Int16 directly to avoid downsampling artifacts
-        const int16Buffer = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          int16Buffer[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-        }
-        
-        let binary = '';
-        const bytes = new Uint8Array(int16Buffer.buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64PCM = window.btoa(binary);
-        
-        if (ws.readyState === WebSocket.OPEN) {
-          // Flush any buffered chunks from the connection phase first
-          if (audioBufferQueueRef.current.length > 0) {
-            console.warn(`Flushing ${audioBufferQueueRef.current.length} buffered audio chunks`);
-            for (const queuedChunk of audioBufferQueueRef.current) {
-              ws.send(JSON.stringify({
-                realtimeInput: {
-                  audio: {
-                    mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                    data: queuedChunk
-                  }
-                }
-              }));
-              chunksSent++;
-            }
-            audioBufferQueueRef.current = [];
-          }
-
-          // Send current chunk
-          ws.send(JSON.stringify({
-            realtimeInput: {
-              audio: {
-                mimeType: `audio/pcm;rate=${actx.sampleRate}`,
-                data: base64PCM
-              }
-            }
-          }));
-          chunksSent++;
-          if (chunksSent % 15 === 0) {
-            console.warn(`Sent ${chunksSent} audio chunks to Gemini`);
-          }
-        } else if (ws.readyState === WebSocket.CONNECTING) {
-          // Buffer audio while the socket is establishing connection to avoid losing the first 1-2 seconds of speech
-          audioBufferQueueRef.current.push(base64PCM);
-        }
+        // Hand over raw float samples; the engine owns resampling to the 16kHz the translation
+        // model expects and pacing them into 100ms chunks.
+        engineRef.current?.sendAudio(e.inputBuffer.getChannelData(0), actx.sampleRate);
       };
-
-
-
     } catch (err: any) {
-      console.error('Failed to initialize Live API session:', err);
-      isEstablishingConnectionRef.current = false;
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError') {
+      console.error('Failed to start live translation:', err);
+      if (err?.code === 'daily_limit' || err?.message === 'daily_limit') {
+        setLimitReached(true);
+        setListeningState(false);
+        setInterimTranscript('');
+        return;
+      }
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || err?.name === 'SecurityError') {
         setMicPermissionError(true);
       } else {
-        alert('マイクの初期化、または接続に失敗しました。');
+        setNetworkError(`⚠️ ${t.connectFailed}`);
+        setTimeout(() => setNetworkError(null), 6000);
       }
       setListeningState(false);
       setInterimTranscript('');
     }
   };
 
-  const stopRecording = () => {
-    // Send turnComplete to Gemini to signal end of user speech and trigger response!
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      beginWaitingForResponse();
-      wsRef.current.send(JSON.stringify({
-        clientContent: {
-          turnComplete: true
-        }
-      }));
-      console.warn('Sent clientContent turnComplete to Gemini');
-    }
+  /**
+   * Ends a turn: stops capturing and hands the microphone back, but leaves both translation
+   * sessions connected so the next turn starts instantly.
+   */
+  /**
+   * Ends a turn. The microphone, the audio graph and both translation sessions all stay alive --
+   * `isListeningRef` alone decides whether samples are forwarded.
+   *
+   * Releasing the microphone track and closing the AudioContext after every turn meant the next
+   * turn had to call getUserMedia and rebuild the graph again, so speech in the first moment after
+   * pressing the button was simply not being captured. Keeping it warm makes a turn start instant.
+   */
+  const handleStopListen = (opts?: { keepStatus?: boolean }) => {
+    setListeningState(false);
+    reconnectCountRef.current = 0;
+    stopUsageReporting();
 
-    // Stop audio tracks
+    engineRef.current?.releaseMicrophone();
+    // When the user has just finished speaking, leave "翻訳しています..." up until the result
+    // actually lands instead of blanking it for the moment in between.
+    if (!opts?.keepStatus) setInterimTranscript('');
+  };
+
+  /** Ends the whole conversation: releases the microphone and closes both sessions. */
+  const shutdownSessions = () => {
+    handleStopListen();
+
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach(track => track.stop());
       audioStreamRef.current = null;
     }
-
-    // Disconnect processors
-    if (mediaSourceRef.current && scriptProcessorRef.current) {
-      try {
-        mediaSourceRef.current.disconnect(scriptProcessorRef.current);
-      } catch (e) {}
-    }
     if (scriptProcessorRef.current) {
-      try {
-        scriptProcessorRef.current.disconnect();
-      } catch (e) {}
+      try { scriptProcessorRef.current.disconnect(); } catch (e) {}
       scriptProcessorRef.current = null;
     }
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      try {
-        audioContextRef.current.close();
-      } catch (e) {}
+    if (mediaSourceRef.current) {
+      try { mediaSourceRef.current.disconnect(); } catch (e) {}
+      mediaSourceRef.current = null;
+    }
+    if (audioContextRef.current) {
+      if (audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch (e) {}
+      }
+      // Clear unconditionally: keeping a closed context here used to block a new one from ever
+      // being created, permanently breaking the mic until a page reload.
       audioContextRef.current = null;
+    }
+
+    engineRef.current?.stop();
+    engineRef.current = null;
+    setInterimTranscript('');
+  };
+
+  // NOTE: for a while this played the audio the translation model itself produces, instead of
+  // synthesising speech from the text. It saves a round trip and the model pays for that audio
+  // whether it is used or not -- but it does not work on a single shared device. The model interprets
+  // SIMULTANEOUSLY: it starts speaking while the person is still talking. The microphone has to be
+  // muted while the app speaks, or the translation is picked up and translated back, so playing that
+  // audio cut the speaker off mid-sentence and their words arrived in fragments. Holding the audio
+  // back until the words settled did not fix it either, since the model keeps talking into the next
+  // utterance. Speaking from the finished text avoids the conflict entirely: nothing is played until
+  // the person has stopped.
+
+  const beginSpeechPlayback = () => {
+    isSpeechPlayingRef.current = true;
+  };
+
+  const endSpeechPlayback = () => {
+    isSpeechPlayingRef.current = false;
+    if (speechWatchdogRef.current) {
+      clearTimeout(speechWatchdogRef.current);
+      speechWatchdogRef.current = null;
     }
   };
 
-  const handleStopListen = () => {
-    setListeningState(false);
-    
-    // Stop audio tracks
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
-    }
-
-    // Disconnect processors
-    if (scriptProcessorRef.current) {
-      try {
-        scriptProcessorRef.current.disconnect();
-      } catch (e) {}
-      scriptProcessorRef.current = null;
-    }
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      try {
-        audioContextRef.current.close();
-      } catch (e) {}
-      audioContextRef.current = null;
-    }
-
-    setInterimTranscript('');
+  const armSpeechWatchdog = (ms: number) => {
+    if (speechWatchdogRef.current) clearTimeout(speechWatchdogRef.current);
+    speechWatchdogRef.current = setTimeout(() => {
+      if (isSpeechPlayingRef.current) {
+        console.warn('Speech playback watchdog fired; re-enabling the microphone.');
+      }
+      isSpeechPlayingRef.current = false;
+      speechWatchdogRef.current = null;
+    }, Math.min(Math.max(ms, 1500), 30000));
   };
 
   const cleanSpeechText = (text: string, langCode: string) => {
@@ -1111,6 +677,10 @@ export default function Home() {
     if (langCode === 'ja') {
       // Disambiguate homograph "空いている" (suiteiru) so TTS reads it as "すいている" instead of "あいている"
       clean = clean.replace(/お腹(が)?空(い|き)/g, 'お腹$1す$2');
+      // "明日" (tomorrow) is also a real given name read "あきら" -- the TTS engine sometimes
+      // picks that reading instead of "あした" since the <rt> furigana hint gets stripped above.
+      // In this app's context it's always "tomorrow", never the name, so force the reading.
+      clean = clean.replace(/明日/g, 'あした');
     }
     return clean
       .replace(/<[^>]*>/g, '') // strip HTML tags
@@ -1119,55 +689,104 @@ export default function Home() {
       .replace(/\[\w+\]\s*/g, '');
   };
 
+  /**
+   * Breaks text into pieces the speech proxy will accept.
+   *
+   * The proxy refuses anything much over 200 characters, and a refusal meant falling back to the
+   * browser's built-in synthesis -- which is why a long translation suddenly switched from a natural
+   * voice to a robotic one of a different gender. Splitting keeps every translation, however long,
+   * in the same voice. Sentence boundaries are preferred, then clause boundaries, so the seams fall
+   * where a speaker would pause anyway.
+   */
+  const splitForSpeech = (text: string, max = 180): string[] => {
+    if (text.length <= max) return [text];
+
+    const pieces: string[] = [];
+    // Keep the delimiter with the piece it ends.
+    const sentences = text.split(/(?<=[。．.!？?！\n])/);
+    let current = '';
+
+    const pushCurrent = () => {
+      const trimmed = current.trim();
+      if (trimmed) pieces.push(trimmed);
+      current = '';
+    };
+
+    for (const sentence of sentences) {
+      if (sentence.length > max) {
+        pushCurrent();
+        // Still too long: fall back to clause boundaries, then to a hard cut.
+        let rest = sentence;
+        while (rest.length > max) {
+          const window = rest.slice(0, max);
+          const comma = Math.max(window.lastIndexOf('、'), window.lastIndexOf('，'), window.lastIndexOf(','));
+          const space = window.lastIndexOf(' ');
+          const cut = comma > max * 0.4 ? comma + 1 : space > max * 0.4 ? space + 1 : max;
+          pieces.push(rest.slice(0, cut).trim());
+          rest = rest.slice(cut);
+        }
+        current = rest;
+        continue;
+      }
+      if (current.length + sentence.length > max) pushCurrent();
+      current += sentence;
+    }
+    pushCurrent();
+    return pieces.filter(Boolean);
+  };
+
   const playSpeech = async (text: string, langCode: string) => {
     const cleanText = cleanSpeechText(text, langCode);
+    if (!cleanText.trim()) return;
+
     try {
-      // Check if we want a male voice and have a local male voice available on the OS
-      const voices = availableVoices.length > 0 ? availableVoices : (typeof window !== 'undefined' && window.speechSynthesis ? window.speechSynthesis.getVoices() : []);
-      const hasLocalMaleVoice = voices.some(voice => {
-        const name = voice.name.toLowerCase();
-        const matchesLang = voice.lang.startsWith(langCode);
-        return matchesLang && MALE_VOICE_KEYWORDS.some(keyword => name.includes(keyword));
-      });
-
-      // If Male Voice is selected and the browser has a matching local male voice, bypass server TTS (which only has female voices)
-      if (voiceGender === 'male' && hasLocalMaleVoice) {
-        fallbackSpeechSynthesis(text, langCode);
-        return;
-      }
-
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = AudioContextClass ? new AudioContextClass() : null;
+      const ctx: AudioContext | null = AudioContextClass ? new AudioContextClass() : null;
       if (!ctx) {
         fallbackSpeechSynthesis(cleanText, langCode);
         return;
       }
 
-      // Fetch speech audio buffer from our server-side TTS proxy (avoids CORS blocks)
-      const proxyUrl = `/api/tts?lang=${langCode}&text=${encodeURIComponent(cleanText)}`;
-      const response = await fetch(proxyUrl);
-      if (!response.ok) {
-        throw new Error('TTS proxy response error');
-      }
-      
-      const arrayBuffer = await response.arrayBuffer();
-      
-      isSpeechPlayingRef.current = true;
-      // Decode audio asynchronously (resilient to mobile autoplay blocks)
-      ctx.decodeAudioData(arrayBuffer, (audioBuffer) => {
+      const segments = splitForSpeech(cleanText);
+
+      // Requested together, then played in order: the voice is consistent and there is no gap
+      // between pieces while a later one is still being fetched.
+      const buffers = await Promise.all(
+        segments.map(async (segment) => {
+          const res = await fetch(`/api/tts?lang=${langCode}&text=${encodeURIComponent(segment)}`);
+          if (!res.ok) throw new Error(`TTS proxy responded ${res.status}`);
+          return ctx.decodeAudioData(await res.arrayBuffer());
+        })
+      );
+
+      const rate = settingsRef.current.speechSpeed || 1;
+      let startAt = ctx.currentTime + 0.05;
+      let totalMs = 0;
+
+      // The microphone stays muted until the last piece has played, so the app never translates its
+      // own voice. The watchdog is sized from the real durations rather than a guess, because
+      // `onended` does not fire if playback is blocked.
+      beginSpeechPlayback();
+      buffers.forEach((buffer, i) => {
         const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
+        source.buffer = buffer;
+        source.playbackRate.value = rate;
         source.connect(ctx.destination);
-        source.playbackRate.value = speechSpeed;
-        source.onended = () => {
-          isSpeechPlayingRef.current = false;
-        };
-        source.start(0);
-      }, (err) => {
-        console.warn('decodeAudioData error, using Web Speech Synthesis fallback:', err);
-        fallbackSpeechSynthesis(cleanText, langCode);
+        source.start(startAt);
+        if (i === buffers.length - 1) {
+          source.onended = () => {
+            endSpeechPlayback();
+            try { ctx.close(); } catch {}
+          };
+        }
+        const seconds = buffer.duration / rate;
+        startAt += seconds;
+        totalMs += seconds * 1000;
       });
+      armSpeechWatchdog(totalMs + 1000);
     } catch (e) {
+      console.warn('Falling back to the browser voice:', e);
+      endSpeechPlayback();
       fallbackSpeechSynthesis(cleanText, langCode);
     }
   };
@@ -1178,44 +797,51 @@ export default function Home() {
       
       const cleanText = cleanSpeechText(text, langCode);
 
-      const browserLang = BROWSER_LANG_MAP[langCode] || langCode;
+      const browserLang = speechLocale(langCode);
 
       const utterance = new SpeechSynthesisUtterance(cleanText);
       utterance.lang = browserLang;
-      utterance.rate = speechSpeed;
+      utterance.rate = settingsRef.current.speechSpeed;
 
       utterance.onstart = () => {
-        isSpeechPlayingRef.current = true;
+        beginSpeechPlayback();
+        // Rough estimate: speech synthesis has no duration up front.
+        armSpeechWatchdog((cleanText.length / 5) * 1000 + 4000);
       };
-      utterance.onend = () => {
-        isSpeechPlayingRef.current = false;
-      };
-      utterance.onerror = () => {
-        isSpeechPlayingRef.current = false;
-      };
+      utterance.onend = () => endSpeechPlayback();
+      utterance.onerror = () => endSpeechPlayback();
 
-      const voices = availableVoices.length > 0 ? availableVoices : (typeof window !== 'undefined' && window.speechSynthesis ? window.speechSynthesis.getVoices() : []);
-      const matchedVoice = voices.find(voice => {
-        const name = voice.name.toLowerCase();
-        const matchesLang = voice.lang.startsWith(langCode);
-        if (voiceGender === 'female') {
-          return matchesLang && !MALE_VOICE_KEYWORDS.some(keyword => name.includes(keyword)) && (name.includes('female') || name.includes('google') || name.includes('natural') || name.includes('kyoko'));
-        } else {
-          return matchesLang && MALE_VOICE_KEYWORDS.some(keyword => name.includes(keyword));
-        }
-      });
+      const voices =
+        availableVoicesRef.current.length > 0
+          ? availableVoicesRef.current
+          : typeof window !== 'undefined' && window.speechSynthesis
+            ? window.speechSynthesis.getVoices()
+            : [];
+      // Pick an ordinary voice for this language. Leaving the choice to the browser is how a
+      // novelty voice (macOS ships robotic ones like "Fred") or a voice for an entirely different
+      // language ended up reading the translation aloud.
+      const forLang = voices.filter(v => v.lang.toLowerCase().startsWith(langCode.toLowerCase()));
+      const isNovelty = (name: string) =>
+        ['fred', 'albert', 'bad news', 'good news', 'bells', 'bubbles', 'jester', 'organ',
+         'trinoids', 'whisper', 'wobble', 'zarvox', 'boing', 'bahh', 'cellos', 'superstar',
+         'junior', 'ralph', 'kathy', 'princess', 'deranged', 'hysterical'].some(n => name.includes(n));
 
+      const usable = forLang.filter(v => !isNovelty(v.name.toLowerCase()));
+      const matchedVoice = usable[0] || forLang[0];
       if (matchedVoice) {
         utterance.voice = matchedVoice;
+        utterance.lang = matchedVoice.lang;
+      } else {
+        console.warn(`No voice installed for "${langCode}"; the browser default will be used.`);
       }
-      
+
       window.speechSynthesis.speak(utterance);
     }
   };
 
   const handleMicButtonClick = (speaker: 'staff' | 'worker') => {
-    // Debounce rapid duplicate click/tap events on the same button (e.g. mobile "ghost clicks"),
-    // which used to be able to fire handleStartListen twice for a single physical tap.
+    // Debounce rapid duplicate click/tap events (e.g. mobile "ghost clicks"), which could otherwise
+    // fire handleStartListen twice for a single physical tap.
     const now = Date.now();
     if (now - lastMicClickRef.current < 600) {
       console.warn('Ignoring rapid duplicate mic button click.');
@@ -1223,43 +849,122 @@ export default function Home() {
     }
     lastMicClickRef.current = now;
 
-    if (isListening && activeSpeaker === speaker) {
-      // Tell Gemini the user's turn is over. The VAD auto-stop path (stopRecording) already
-      // does this on its own; tapping the button to manually end the utterance did not, which
-      // left the server waiting for audio that would never come and the UI stuck forever. This
-      // must only fire here (the actual "user is ending a live recording" moment) and not from
-      // inside handleStopListen generally, since that cleanup function also runs right after a
-      // turn finishes successfully -- sending turnComplete there too caused a second, spurious
-      // "empty" turn immediately after every real reply.
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          beginWaitingForResponse();
-          wsRef.current.send(JSON.stringify({ clientContent: { turnComplete: true } }));
-          console.warn('handleMicButtonClick: sent clientContent turnComplete to Gemini.');
-        } catch (e) {}
-      }
-      handleStopListen();
+    if (isListening) {
+      if (activeSpeaker !== speaker) return; // the other button is disabled anyway
+      // Ask the server to finalize immediately, then stop capturing right away. There is no delay
+      // to wait out: the sessions stay connected between turns, so the tail of the translation
+      // still arrives afterwards. The previous version paused ~1.6s here before tearing the socket
+      // down, which both made every turn feel sluggish and cut off translations that were still
+      // in flight.
+      engineRef.current?.markAudioPause();
+      setInterimTranscript(t.translating);
+      handleStopListen({ keepStatus: true });
+      // "Translating..." is normally cleared by the arriving translation, but nothing arrives when
+      // the microphone picked up no speech at all -- and the message then sat there forever.
+      if (statusWatchdogRef.current) clearTimeout(statusWatchdogRef.current);
+      statusWatchdogRef.current = setTimeout(() => {
+        statusWatchdogRef.current = null;
+        setInterimTranscript(prev => (prev === t.translating ? '' : prev));
+      }, 6000);
+      return;
+    }
+    handleStartListen(speaker);
+  };
+
+  /**
+   * Accepts a language suggestion: repoints that side, and re-translates the utterance that
+   * triggered it so the wrong-direction message on screen is corrected rather than left behind.
+   */
+  const acceptLangSuggestion = async () => {
+    const suggestion = langSuggestion;
+    if (!suggestion) return;
+    setLangSuggestion(null);
+
+    const { side, code } = suggestion;
+    const otherSide: 'staff' | 'worker' = side === 'staff' ? 'worker' : 'staff';
+    const otherLang = side === 'staff' ? workerLangRef.current : staffLangRef.current;
+
+    // Two different mistakes lead here, and they need opposite corrections.
+    const pressedWrongButton = code === otherLang;
+
+    let speaker: 'staff' | 'worker';
+    let toLang: string;
+
+    if (pressedWrongButton) {
+      // The language spoken is the one the other side is already set to: the person simply tapped
+      // the wrong button. Nothing about the languages is wrong, so leave both dropdowns alone and
+      // just attribute this turn to the side it actually came from.
+      speaker = otherSide;
+      toLang = side === 'staff' ? staffLangRef.current : workerLangRef.current;
     } else {
-      handleStartListen(speaker);
+      // A third language: this side really is set to the wrong one.
+      speaker = side;
+      toLang = otherLang;
+      setSideLanguage(side, code);
+    }
+
+    const last = lastUtteranceRef.current;
+    if (!last || last.speaker !== side || !last.originalText) {
+      console.warn('No matching utterance to re-translate.', last, side);
+      return;
+    }
+    console.warn(`re-translating "${last.originalText}" as ${code} -> ${toLang}`);
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: last.originalText,
+          fromLang: code,
+          toLang,
+          useRuby: settingsRef.current.useRuby,
+        }),
+      });
+      if (!res.ok) {
+        // 429 is the daily cap on this endpoint; anything else is a server error.
+        console.error(`re-translation failed: HTTP ${res.status}`);
+        setNetworkError(`⚠️ ${t.retranslateFailed}`);
+        setTimeout(() => setNetworkError(null), 6000);
+        return;
+      }
+      const data = await res.json();
+      const corrected: string | undefined = data?.translatedText;
+      if (!data?.success || !corrected || /^\[[a-z]{2}\]\s/i.test(corrected)) {
+        console.error('re-translation returned nothing usable:', data);
+        return;
+      }
+      console.warn('re-translated:', corrected);
+
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === last.msgId);
+        if (idx === -1) return prev;
+        const updated = [...prev];
+        updated[idx] = {
+          ...updated[idx],
+          sender: speaker,
+          translatedText: corrected.trim(),
+          fromLang: code,
+          toLang,
+        };
+        return updated;
+      });
+    } catch (e) {
+      console.error('Could not re-translate after language switch:', e);
     }
   };
 
-  const clearHistory = () => {
-    if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch (e) {}
-      wsRef.current = null;
+  const dismissLangSuggestion = () => {
+    if (langSuggestion) {
+      // Remember the refusal so the same question isn't asked again and again.
+      dismissedSuggestionsRef.current.add(`${langSuggestion.side}:${langSuggestion.code}`);
     }
-    handleStopListen();
+    setLangSuggestion(null);
+  };
+
+  const clearHistory = () => {
+    shutdownSessions();
     setMessages([]);
     setInterimTranscript('');
-
-    // Also clear the shared room on the server; otherwise the next polling tick (every 1s)
-    // just fetches the old messages back from KV and undoes this reset for anyone in the room.
-    if (roomId) {
-      fetch(`/api/channel?roomId=${encodeURIComponent(roomId)}`, { method: 'DELETE' }).catch(console.error);
-    }
   };
 
   return (
@@ -1271,7 +976,7 @@ export default function Home() {
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-sm font-black tracking-wider text-slate-100 uppercase">GenbaTalk</h1>
+            <h1 className="text-sm font-black tracking-wider text-slate-100 uppercase">Talkie</h1>
             <div className="flex items-center gap-1.5 mt-0.5">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">AI Live Active</span>
@@ -1280,19 +985,9 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Preset Quick Button */}
-          <button
-            onClick={() => setIsPresetOpen(true)}
-            title="定型文クイック拡声"
-            className="p-2 rounded-xl bg-slate-900/80 border border-slate-800/80 text-amber-400 hover:text-amber-300 hover:bg-slate-800/80 transition-all cursor-pointer hover:scale-105 active:scale-95 flex items-center gap-1"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span className="text-[10px] font-black hidden xs:inline">定型文</span>
-          </button>
-
           <button
             onClick={clearHistory}
-            title="会話履歴クリア"
+            title={t.clearHistory}
             className="p-2 rounded-xl bg-slate-900/80 border border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition-all cursor-pointer hover:scale-105 active:scale-95"
           >
             <RefreshCw className="w-4 h-4" />
@@ -1300,7 +995,7 @@ export default function Home() {
           
           <button
             onClick={() => setIsSettingsOpen(true)}
-            title="設定"
+            title={t.settings}
             className="p-2 rounded-xl bg-slate-900/80 border border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition-all cursor-pointer hover:scale-105 active:scale-95"
           >
             <Settings className="w-4 h-4" />
@@ -1309,118 +1004,91 @@ export default function Home() {
       </header>
 
       {/* Language Selector Ribbon */}
-      <div className="bg-slate-900/30 border-b border-slate-900/60 px-4 py-2.5 flex items-center justify-between text-xs z-10 shrink-0 backdrop-blur-md">
-        <div className="flex items-center gap-2">
-          <span className="font-black text-[10px] text-indigo-400 uppercase tracking-wider">監督</span>
-          <select 
-            value={staffLang} 
-            onChange={(e) => setStaffLang(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-2.5 font-bold text-slate-200 outline-none cursor-pointer hover:border-indigo-500/50 transition-colors"
+      {/* A grid rather than a flex row: with 78 languages the options include names as long as
+          "Português (Brasil)", and a select sizes itself to its widest option. Laid out with flex it
+          pushed the second one off the right edge of the screen. Two equal columns that are allowed
+          to shrink (min-w-0) keep both on screen whatever is chosen. */}
+      <div className="bg-slate-900/30 border-b border-slate-900/60 px-3 py-2.5 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 text-xs z-10 shrink-0 backdrop-blur-md">
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="font-black text-[9px] text-indigo-400 uppercase tracking-wider px-0.5">
+            {t.sideA}
+          </span>
+          <select
+            value={staffLang}
+            onChange={(e) => setSideLanguage('staff', e.target.value)}
+            className="w-full min-w-0 bg-slate-950 border border-slate-800 rounded-xl py-1.5 pl-2 pr-1 font-bold text-slate-200 outline-none cursor-pointer hover:border-indigo-500/50 focus:border-indigo-500/60 transition-colors truncate"
           >
-            {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            {LANGUAGES.map(l => (
+              <option key={l.code} value={l.code}>{`${l.flag} ${l.name}`}</option>
+            ))}
           </select>
         </div>
-        <div className="w-8 h-8 rounded-full bg-slate-950 border border-slate-900 flex items-center justify-center shrink-0">
-          <Languages className="w-3.5 h-3.5 text-slate-500 animate-spin-slow" />
+
+        <div className="w-8 h-8 mt-4 rounded-full bg-slate-950 border border-slate-900 flex items-center justify-center shrink-0">
+          <Languages className="w-3.5 h-3.5 text-slate-500" />
         </div>
-        <div className="flex items-center gap-2">
-          <span className="font-black text-[10px] text-emerald-400 uppercase tracking-wider">作業員</span>
-          <select 
-            value={workerLang} 
-            onChange={(e) => setWorkerLang(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-xl py-1.5 px-2.5 font-bold text-slate-200 outline-none cursor-pointer hover:border-emerald-500/50 transition-colors"
+
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="font-black text-[9px] text-emerald-400 uppercase tracking-wider px-0.5">
+            {t.sideB}
+          </span>
+          <select
+            value={workerLang}
+            onChange={(e) => setSideLanguage('worker', e.target.value)}
+            className="w-full min-w-0 bg-slate-950 border border-slate-800 rounded-xl py-1.5 pl-2 pr-1 font-bold text-slate-200 outline-none cursor-pointer hover:border-emerald-500/50 focus:border-emerald-500/60 transition-colors truncate"
           >
-            {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            {LANGUAGES.map(l => (
+              <option key={l.code} value={l.code}>{`${l.flag} ${l.name}`}</option>
+            ))}
           </select>
         </div>
       </div>
 
-      {/* Hands-free Auto-Conversation Mode Card */}
-      <div className={`mx-4 mt-3 p-3 rounded-2xl border transition-all duration-300 flex items-center justify-between shrink-0 z-10 ${
-        isHandsFree 
-          ? 'bg-gradient-to-r from-indigo-950/45 to-purple-950/45 border-indigo-500/40 shadow-[0_0_15px_rgba(99,102,241,0.15)]' 
-          : 'bg-slate-900/20 border-slate-900/80'
-      }`}>
-        <div className="flex items-center gap-2.5">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
-            isHandsFree ? 'bg-indigo-600 text-white animate-pulse' : 'bg-slate-950 text-slate-500'
-          }`}>
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="text-xs font-black tracking-wide text-slate-200">ハンズフリー自動会話</div>
-            <div className="text-[9px] text-slate-400 font-bold mt-0.5">
-              {isHandsFree ? '交互にそのまま発話してください' : 'タップ不要で交互に自動翻訳'}
-            </div>
-          </div>
-        </div>
-        <button
-          onClick={() => {
-            const nextVal = !isHandsFree;
-            setIsHandsFree(nextVal);
-            isHandsFreeRef.current = nextVal;
-            if (nextVal) {
-              // Start hands-free auto session immediately!
-              handleStartListen('staff');
-            } else {
-              handleStopListen();
-            }
-          }}
-          className={`px-3 py-1.5 rounded-xl text-[10px] font-black tracking-widest uppercase transition-all duration-200 cursor-pointer ${
-            isHandsFree 
-              ? 'bg-red-500 hover:bg-red-400 text-white shadow-lg shadow-red-500/10' 
-              : 'bg-slate-950 border border-slate-800 text-slate-300 hover:bg-slate-900'
-          }`}
-        >
-          {isHandsFree ? '終了' : '開始'}
-        </button>
-      </div>
-
-      {/* Room ID Synchronization Input Ribbon */}
-      <div className="bg-slate-950/60 px-5 py-2 border-b border-slate-900/60 flex items-center justify-between gap-3 text-xs shrink-0 z-10">
-        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">リモート同期チャンネル:</span>
-        <input 
-          type="text" 
-          placeholder="未接続 (スタンドアロン)" 
-          value={roomId} 
-          onChange={(e) => setRoomId(e.target.value.replace(/[^a-zA-Z0-9]/g, ''))}
-          className="bg-slate-900 border border-slate-800 rounded-lg py-1 px-2.5 font-bold text-center text-slate-200 w-36 outline-none focus:border-indigo-500/50 transition-colors placeholder:text-slate-600 placeholder:text-[10px]"
-        />
-      </div>
-
-      {/* Error Banners */}
-      {micPermissionError && (
-        <div className="bg-red-950/80 border-b border-red-900/50 px-5 py-3 text-xs text-red-200 font-medium flex items-center justify-between gap-3 animate-in fade-in duration-200 shrink-0 z-10">
-          <span>⚠️ マイクへのアクセスが拒否されています。ブラウザのアドレスバーにある鍵マークからマイクの使用を許可してください。</span>
-          <button 
-            onClick={() => setMicPermissionError(false)}
-            className="text-red-400 hover:text-red-300 font-bold shrink-0"
+      {/* Free allowance used up */}
+      {limitReached && (
+        <div className="bg-amber-950/80 border-b border-amber-900/50 px-5 py-3 text-xs text-amber-200 font-medium flex items-center justify-between gap-3 shrink-0 z-10">
+          <span>⚠️ {t.limitReached}</span>
+          <button
+            onClick={() => setLimitReached(false)}
+            className="text-amber-400 hover:text-amber-300 font-bold shrink-0 cursor-pointer"
           >
-            閉じる
+            {t.close}
           </button>
         </div>
       )}
 
-      {networkError && (
-        <div className="bg-amber-950/80 border-b border-amber-900/50 px-5 py-3 text-xs text-amber-200 font-medium flex items-center justify-between gap-3 animate-in fade-in duration-200 shrink-0 z-10">
-          <span>{networkError}</span>
-          <button 
-            onClick={() => setNetworkError(null)}
-            className="text-amber-400 hover:text-amber-300 font-bold shrink-0"
-          >
-            閉じる
-          </button>
+      {/* Language suggestion -- offered, never applied automatically */}
+      {langSuggestion && (
+        <div className="bg-indigo-950/70 border-b border-indigo-800/50 px-5 py-3 text-xs text-indigo-100 font-medium flex items-center justify-between gap-3 animate-in fade-in duration-200 shrink-0 z-10">
+          <span className="flex items-center gap-2">
+            <Languages className="w-4 h-4 shrink-0 text-indigo-300" />
+            {t.langAsk(langLabel(langSuggestion.code))}
+          </span>
+          <span className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={acceptLangSuggestion}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer"
+            >
+              {t.langYes}
+            </button>
+            <button
+              onClick={dismissLangSuggestion}
+              className="text-indigo-300 hover:text-indigo-100 font-bold px-2 cursor-pointer"
+            >
+              {t.langNo}
+            </button>
+          </span>
         </div>
       )}
 
       {/* Chat Conversation Timeline */}
-      <Timeline messages={messages} onSpeak={playSpeech} />
+      <Timeline t={t} messages={messages} onSpeak={playSpeech} />
 
       {/* Interim transcription card (shows text while talking) */}
       {interimTranscript && (
         <div className="absolute left-4 right-4 bottom-32 bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl shadow-xl z-20 backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-200">
           <div className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-1">
-            {activeSpeaker === 'staff' ? '監督が発話中...' : '作業員が発話中...'}
+            {`${langLabel(activeSpeaker === 'staff' ? staffLang : workerLang)} · ${t.speaking}`}
           </div>
           <p className="text-sm font-bold text-slate-100 leading-relaxed italic">
             "{interimTranscript}"
@@ -1431,16 +1099,16 @@ export default function Home() {
       {/* Speech Control Dock */}
       <div className="bg-slate-950/95 border-t border-slate-900/80 p-5 shrink-0 space-y-4 backdrop-blur-md z-10">
         <div className="flex items-center justify-between gap-4">
-          
-          {/* Staff (Japanese) Mic Button */}
+
+          {/* Staff (Japanese) */}
           <div className="flex-1 flex flex-col items-center gap-2">
             <button
               disabled={isListening && activeSpeaker !== 'staff'}
               onClick={() => handleMicButtonClick('staff')}
               className={`w-full py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-md ${
                 isListening && activeSpeaker === 'staff'
-                  ? 'bg-red-500 text-white animate-pulse shadow-red-500/10'
-                  : isListening && activeSpeaker !== 'staff'
+                  ? 'bg-red-500 hover:bg-red-400 text-white animate-pulse shadow-red-500/10 cursor-pointer'
+                  : isListening
                     ? 'bg-slate-950/20 border border-slate-900 text-slate-700 cursor-not-allowed'
                     : 'bg-indigo-600 hover:bg-indigo-500 text-white hover:scale-[1.02] shadow-indigo-600/10 cursor-pointer'
               }`}
@@ -1450,7 +1118,9 @@ export default function Home() {
               ) : (
                 <Mic className="w-5 h-5" />
               )}
-              <span className="text-xs font-black tracking-wide">監督が話す (日本語)</span>
+              <span className="text-xs font-black tracking-wide">
+                {isListening && activeSpeaker === 'staff' ? t.speakNow : t.speakIn(langLabel(staffLang))}
+              </span>
             </button>
             {isListening && activeSpeaker === 'staff' && (
               <div className="w-24">
@@ -1459,15 +1129,15 @@ export default function Home() {
             )}
           </div>
 
-          {/* Worker (Foreign) Mic Button */}
+          {/* Worker (foreign language) */}
           <div className="flex-1 flex flex-col items-center gap-2">
             <button
               disabled={isListening && activeSpeaker !== 'worker'}
               onClick={() => handleMicButtonClick('worker')}
               className={`w-full py-4 px-4 rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all duration-300 shadow-md ${
                 isListening && activeSpeaker === 'worker'
-                  ? 'bg-red-500 text-white animate-pulse shadow-red-500/10'
-                  : isListening && activeSpeaker !== 'worker'
+                  ? 'bg-red-500 hover:bg-red-400 text-white animate-pulse shadow-red-500/10 cursor-pointer'
+                  : isListening
                     ? 'bg-slate-950/20 border border-slate-900 text-slate-700 cursor-not-allowed'
                     : 'bg-emerald-600 hover:bg-emerald-500 text-white hover:scale-[1.02] shadow-emerald-600/10 cursor-pointer'
               }`}
@@ -1477,7 +1147,9 @@ export default function Home() {
               ) : (
                 <Mic className="w-5 h-5" />
               )}
-              <span className="text-xs font-black tracking-wide">作業員が話す (外国語)</span>
+              <span className="text-xs font-black tracking-wide">
+                {isListening && activeSpeaker === 'worker' ? t.speakNow : t.speakIn(langLabel(workerLang))}
+              </span>
             </button>
             {isListening && activeSpeaker === 'worker' && (
               <div className="w-24">
@@ -1491,29 +1163,17 @@ export default function Home() {
 
       {/* Settings Modal */}
       <SettingsModal
+        t={t}
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         speechSpeed={speechSpeed}
         setSpeechSpeed={setSpeechSpeed}
-        voiceGender={voiceGender}
-        setVoiceGender={setVoiceGender}
         autoPlayAudio={autoPlayAudio}
         setAutoPlayAudio={setAutoPlayAudio}
         useRuby={useRuby}
         setUseRuby={setUseRuby}
-        customGlossary={customGlossary}
-        setCustomGlossary={setCustomGlossary}
-        presets={presets}
-        setPresets={setPresets}
       />
 
-      {/* Preset Drawer */}
-      <PresetDrawer
-        isOpen={isPresetOpen}
-        onClose={() => setIsPresetOpen(false)}
-        onSelectPreset={handlePresetSelect}
-        presets={presets}
-      />
     </div>
   );
 }

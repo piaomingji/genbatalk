@@ -41,7 +41,7 @@ export default function PricingSuccessPage() {
               href="/"
               className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white font-bold rounded-2xl shadow-lg shadow-emerald-500/10 transition-all flex items-center justify-center gap-1.5 text-xs hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
             >
-              <span>ゲンバトークの利用を開始する</span>
+              <span>Talkieを使いはじめる</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
@@ -51,7 +51,7 @@ export default function PricingSuccessPage() {
 
       {/* Footer */}
       <footer className="border-t border-slate-900/60 px-6 py-6 text-center text-[10px] text-slate-500 shrink-0 select-none">
-        <p>© 2026 GENBATALK. All rights reserved.</p>
+        <p>© 2026 Talkie. All rights reserved.</p>
       </footer>
 
     </div>

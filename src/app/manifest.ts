@@ -2,9 +2,9 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'ゲンバトーク - AI音声通訳インカム',
-    short_name: 'ゲンバトーク',
-    description: '現場で働く外国人労働者・警察・行政向けAIリアルタイム同時通訳インカムアプリ',
+    name: 'Talkie - Real-time voice translation',
+    short_name: 'Talkie',
+    description: 'Real-time voice translation between any two languages.',
     start_url: '/',
     display: 'standalone',
     background_color: '#020617',

@@ -4,136 +4,147 @@ import React, { useState } from 'react';
 import { Check, ArrowLeft, Sparkles, Zap, Users, HelpCircle } from 'lucide-react';
 import Link from 'next/link';
 
+/**
+ * Plans are priced by minutes of live translation, because that is what the service actually costs
+ * to run: audio is billed by the second. The previous page sold feature tiers (custom dictionaries,
+ * device sync, preset phrases, voice選択) that no longer exist, and offered "unlimited" translation,
+ * which for a metered audio service has no floor on what a single heavy user can cost.
+ *
+ * The included minutes are set so each paid plan keeps a healthy margin over its own usage, and the
+ * free tier is capped per month rather than per day -- ten minutes a day would be five hours a
+ * month, which costs more per free user than a subscription brings in.
+ */
 export default function PricingPage() {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
+  const yearly = billingCycle === 'yearly';
 
   const plans = [
     {
-      name: 'フリープラン',
-      desc: '基本的な機能をお試ししたい現場向け',
+      name: 'Free',
+      desc: 'Try it out, no account needed',
       price: '0',
+      yearlyPrice: '0',
       icon: Zap,
-      accent: 'indigo',
       features: [
-        '1日の翻訳上限 50回まで',
-        '主要17言語の相互音声通訳',
-        '標準通訳音声 (女性のみ)',
-        'カスタム単語辞書の登録 (最大5語)',
-        '1デバイスでのスタンドアロン利用'
+        '10 minutes of live translation per month',
+        'All 17 languages, both directions',
+        'Automatic language detection',
+        'Spoken translations',
+        'Furigana for Japanese',
       ],
-      buttonText: '現在適用中',
-      buttonClass: 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed w-full block text-center py-3 rounded-2xl font-bold text-xs',
+      buttonText: 'Current plan',
+      buttonClass:
+        'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed w-full block text-center py-3 rounded-2xl font-bold text-xs',
       popular: false,
-      href: ''
+      href: '',
     },
     {
-      name: 'プロプラン',
-      desc: '1対1の通訳機能を本格的に活用したい現場向け',
-      price: billingCycle === 'monthly' ? '2,980' : '2,380',
+      name: 'Plus',
+      desc: 'For travel and occasional conversations',
+      price: '7.99',
+      yearlyPrice: '6.39',
       icon: Sparkles,
-      accent: 'emerald',
       features: [
-        '翻訳・通訳回数 無制限',
-        '男性・女性音声の優先再生',
-        '自社辞書の登録・CSVインポート無制限',
-        'AIによる資料からの用語自動抽出',
-        '2台のデバイス間（監督 ↔ 作業員）での同期',
-        '定型文（プリセット）の自由な編集・保存',
-        'メールサポート (通常3営業日以内)'
+        '60 minutes of live translation per month',
+        'Everything in Free',
+        'Faster, higher-quality translation',
+        'Conversation history',
+        'Email support',
       ],
-      buttonText: billingCycle === 'monthly' ? 'プロプランを始める (月額)' : 'プロプランを始める (年額)',
-      buttonClass: 'bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-lg shadow-emerald-500/10 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
+      buttonText: 'Choose Plus',
+      buttonClass:
+        'bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-lg shadow-emerald-500/10 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
       popular: true,
-      href: '/pricing/success?plan=pro'
+      href: '/pricing/success?plan=plus',
     },
     {
-      name: 'ビジネスプラン',
-      desc: 'チーム内での専門用語の共有や一斉指示を行いたい現場向け',
-      price: billingCycle === 'monthly' ? '9,800' : '7,800',
+      name: 'Pro',
+      desc: 'For work, study and daily use',
+      price: '19.99',
+      yearlyPrice: '15.99',
       icon: Users,
-      accent: 'indigo',
       features: [
-        '翻訳・通訳回数 無制限',
-        '最大5台のデバイス間での同時共有・同期',
-        'チーム内での専門用語辞書の自動一括共有',
-        '男性・女性音声の優先再生',
-        '自社辞書の登録・CSVインポート無制限',
-        'AIによる資料からの用語自動抽出',
-        '優先メールサポート (通常1営業日以内)'
+        '200 minutes of live translation per month',
+        'Everything in Plus',
+        'Priority email support',
+        'Extra minutes available when you need them',
       ],
-      buttonText: billingCycle === 'monthly' ? 'ビジネスプランを始める (月額)' : 'ビジネスプランを始める (年額)',
-      buttonClass: 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
+      buttonText: 'Choose Pro',
+      buttonClass:
+        'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
       popular: false,
-      href: '/pricing/success?plan=business'
-    }
+      href: '/pricing/success?plan=pro',
+    },
   ];
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30">
-      
+
       {/* Header Navigation */}
       <header className="border-b border-slate-900/80 px-6 py-4 flex items-center justify-between shrink-0 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
         <Link href="/" className="flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-slate-100 transition-all select-none">
           <ArrowLeft className="w-4 h-4" />
-          <span className="hidden xs:inline">ゲンバトークへ戻る</span>
+          <span className="hidden xs:inline">Back to Talkie</span>
         </Link>
         <div className="font-black text-sm tracking-widest text-slate-300">
-          GENBA<span className="text-emerald-400">TALK</span>
+          TALK<span className="text-emerald-400">IE</span>
         </div>
         <Link href="/contact" className="text-xs font-bold text-slate-400 hover:text-emerald-400 transition-all select-none">
-          お問い合わせ
+          Contact
         </Link>
       </header>
 
-      {/* Hero Section */}
       <main className="flex-1 overflow-y-auto px-6 py-12 space-y-12 max-w-5xl mx-auto w-full">
-        
-        {/* Hero Title */}
+
+        {/* Hero */}
         <div className="text-center space-y-3">
           <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full inline-block">
-            料金プラン
+            Pricing
           </span>
-          <h1 className="text-3xl font-black text-slate-100 tracking-tight leading-none break-keep">
-            現場に最適なプランを
+          <h1 className="text-3xl font-black text-slate-100 tracking-tight leading-none">
+            Pay for the minutes you talk
           </h1>
           <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-            小規模な現場検証から本格的な複数現場・チームでの導入まで、クレジットカード決済のみで即座に開始・解約が可能です。
+            Every plan includes all 17 languages and both directions of translation. Plans differ
+            only in how much you speak. Cancel any time.
           </p>
         </div>
 
-        {/* Toggle Billing Cycle */}
+        {/* Billing cycle */}
         <div className="flex justify-center select-none">
           <div className="bg-slate-900 border border-slate-800 p-1 rounded-2xl flex items-center gap-1 shadow-inner">
             <button
               onClick={() => setBillingCycle('monthly')}
               className={`px-4 py-2 text-xs font-bold rounded-xl transition-all ${
-                billingCycle === 'monthly'
+                !yearly
                   ? 'bg-slate-800 text-slate-100 shadow-md border border-slate-700/60'
                   : 'text-slate-500 hover:text-slate-300'
               }`}
             >
-              月額払い
+              Monthly
             </button>
             <button
               onClick={() => setBillingCycle('yearly')}
               className={`px-4 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
-                billingCycle === 'yearly'
+                yearly
                   ? 'bg-slate-800 text-slate-100 shadow-md border border-slate-700/60'
                   : 'text-slate-500 hover:text-slate-300'
               }`}
             >
-              <span>年額払い</span>
+              <span>Yearly</span>
               <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md font-black">
-                20% OFF
+                SAVE 20%
               </span>
             </button>
           </div>
         </div>
 
-        {/* Pricing Cards Grid */}
+        {/* Plans */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
           {plans.map((plan) => {
             const Icon = plan.icon;
+            const shown = yearly ? plan.yearlyPrice : plan.price;
+            const isFree = plan.price === '0';
             return (
               <div
                 key={plan.name}
@@ -143,15 +154,13 @@ export default function PricingPage() {
                     : 'border-slate-800 hover:border-slate-700/80 shadow-md'
                 }`}
               >
-                {/* Popular Ribbon */}
                 {plan.popular && (
                   <span className="absolute -top-3 right-6 bg-gradient-to-r from-emerald-500 to-indigo-600 text-white text-[10px] font-black px-3 py-1 rounded-full shadow-md select-none flex items-center gap-1">
                     <Sparkles className="w-3 h-3 animate-pulse" />
-                    <span>おすすめ</span>
+                    <span>Most popular</span>
                   </span>
                 )}
 
-                {/* Plan Info */}
                 <div className="space-y-6">
                   <div className="flex items-center gap-3">
                     <div className={`p-2.5 rounded-xl bg-slate-950/40 border border-slate-800/80 ${
@@ -165,23 +174,17 @@ export default function PricingPage() {
                     </div>
                   </div>
 
-                  {/* Price */}
                   <div className="flex items-baseline gap-1 select-none border-b border-slate-800/60 pb-6">
-                    <span className="text-sm font-bold text-slate-400">¥</span>
-                    <span className="text-3xl font-black text-slate-100 tracking-tight">
-                      {plan.price}
-                    </span>
-                    <span className="text-xs text-slate-500 ml-1">
-                      / 月
-                    </span>
-                    {plan.price !== '0' && (
+                    <span className="text-sm font-bold text-slate-400">$</span>
+                    <span className="text-3xl font-black text-slate-100 tracking-tight">{shown}</span>
+                    <span className="text-xs text-slate-500 ml-1">/ month</span>
+                    {!isFree && yearly && (
                       <span className="text-[9px] text-slate-500 ml-2 font-mono">
-                        (年額一括 ¥{parseInt(plan.price.replace(/,/g, '')) * 12})
+                        (${(Number(plan.yearlyPrice) * 12).toFixed(2)} billed yearly)
                       </span>
                     )}
                   </div>
 
-                  {/* Features List */}
                   <ul className="space-y-3.5 text-xs text-slate-300">
                     {plan.features.map((feature, idx) => (
                       <li key={idx} className="flex items-start gap-2.5 leading-relaxed">
@@ -194,7 +197,6 @@ export default function PricingPage() {
                   </ul>
                 </div>
 
-                {/* CTA Button */}
                 <div className="pt-8">
                   {plan.href ? (
                     <Link href={plan.href} className={plan.buttonClass}>
@@ -206,51 +208,61 @@ export default function PricingPage() {
                     </button>
                   )}
                 </div>
-
               </div>
             );
           })}
         </div>
 
-        {/* Pricing FAQs */}
+        {/* FAQ */}
         <div className="border-t border-slate-900/80 pt-12 space-y-6">
           <h2 className="text-center font-black text-lg text-slate-100 flex items-center justify-center gap-2">
             <HelpCircle className="w-5 h-5 text-indigo-400" />
-            <span>よくある質問</span>
+            <span>Questions</span>
           </h2>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs leading-relaxed">
             <div className="space-y-1 bg-slate-900/40 p-4 rounded-2xl border border-slate-900/60">
-              <h4 className="font-bold text-slate-200">支払い方法は何が対応していますか？</h4>
-              <p className="text-slate-400">クレジットカード決済（Visa、Mastercard、JCB、American Express等）およびApple Pay、Google Payに対応しています。</p>
+              <h4 className="font-bold text-slate-200">What counts as a minute?</h4>
+              <p className="text-slate-400">
+                Only the time the microphone is actually listening. Reading the conversation,
+                changing languages and replaying a translation cost nothing.
+              </p>
             </div>
             <div className="space-y-1 bg-slate-900/40 p-4 rounded-2xl border border-slate-900/60">
-              <h4 className="font-bold text-slate-200">最低利用期間はありますか？解除料は発生しますか？</h4>
-              <p className="text-slate-400">月額プランには最低利用期間はなく、いつでも画面から解約できます。解約手数料や違約金も一切発生しません。年額プランの場合は年間一括でのお支払いとなり、期間途中での返金は致しかねます。</p>
+              <h4 className="font-bold text-slate-200">What happens when I run out?</h4>
+              <p className="text-slate-400">
+                Translation pauses until your next monthly reset, or until you move to a larger plan.
+                Nothing is charged automatically without you choosing it.
+              </p>
             </div>
             <div className="space-y-1 bg-slate-900/40 p-4 rounded-2xl border border-slate-900/60">
-              <h4 className="font-bold text-slate-200">現場ごとの専門用語辞書のカスタマイズは簡単ですか？</h4>
-              <p className="text-slate-400">はい！プロプランおよびビジネスプランでは、設定画面からCSVファイルで一括インポートする機能や、AIが自社マニュアルをスキャンして自動で専門用語集を抽出・登録するセルフサービス機能が利用できます。</p>
+              <h4 className="font-bold text-slate-200">Can I cancel any time?</h4>
+              <p className="text-slate-400">
+                Yes. Monthly plans can be cancelled whenever you like with no fee, and you keep
+                access until the end of the period you have paid for.
+              </p>
             </div>
             <div className="space-y-1 bg-slate-900/40 p-4 rounded-2xl border border-slate-900/60">
-              <h4 className="font-bold text-slate-200">領収書や請求書は発行されますか？</h4>
-              <p className="text-slate-400">クレジットカード決済完了後、Stripeよりご登録いただいたメールアドレス宛てに領収書が自動発行・送付されます。</p>
+              <h4 className="font-bold text-slate-200">Is my conversation stored?</h4>
+              <p className="text-slate-400">
+                Conversations stay on your device and are cleared when you close the app. See the
+                privacy policy for how audio is processed.
+              </p>
             </div>
           </div>
         </div>
-
       </main>
 
-      {/* Footer */}
       <footer className="border-t border-slate-900/60 px-6 py-6 text-center text-[10px] text-slate-500 shrink-0 select-none">
-        <p>© 2026 GENBATALK. All rights reserved.</p>
+        <p>© 2026 Talkie. All rights reserved.</p>
         <p className="mt-1 flex items-center justify-center gap-2">
-          <Link href="/tokushoho" className="hover:underline">特定商取引法に基づく表記</Link>
+          <Link href="/terms" className="hover:underline">Terms</Link>
           <span className="text-slate-700">|</span>
-          <Link href="/privacy" className="hover:underline">プライバシーポリシー</Link>
+          <Link href="/privacy" className="hover:underline">Privacy</Link>
+          <span className="text-slate-700">|</span>
+          <Link href="/tokushoho" className="hover:underline">Legal notice (Japan)</Link>
         </p>
       </footer>
-
     </div>
   );
 }

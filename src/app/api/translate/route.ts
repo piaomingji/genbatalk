@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
-import { getGlossaryText } from '@/lib/glossary';
+import { clientKey, consumeDailyQuota } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -12,21 +11,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
 
-    // Rate Limiting via Vercel KV
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "127.0.0.1";
-    const ipKey = `genbatalk:rate:${ip}`;
-    let currentIpCount = 0;
-    
-    try {
-      currentIpCount = (await kv.get<number>(ipKey)) || 0;
-      if (currentIpCount >= 50) {
-        return NextResponse.json(
-          { error: '1日の翻訳上限（50回）を超過しました。有料プランのご加入をご検討ください。' },
-          { status: 429 }
-        );
-      }
-    } catch (e) {
-      console.warn('Vercel KV not connected yet, skipping rate limit check:', e);
+    const { id } = clientKey(req);
+    if (!(await consumeDailyQuota('txt', id, 300))) {
+      return NextResponse.json({ error: 'daily_limit' }, { status: 429 });
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
@@ -36,16 +23,25 @@ export async function POST(req: NextRequest) {
       try {
         let prompt = '';
         let customGlossaryPrompt = '';
-        if (customGlossary && customGlossary.length > 0) {
+        if (Array.isArray(customGlossary) && customGlossary.length > 0) {
           const customLines = customGlossary
-            .filter((item: any) => item.ja && item.translation && item.lang)
-            .map((item: any) => `- "${item.ja}" (ja) <-> "${item.translation}" (${item.lang}) (Translate bidirectionally. When translating to Japanese, always use "${item.ja}")`);
+            .filter((item: any) => item?.source && item?.translation)
+            .map((item: any) => `- "${item.source}" <-> "${item.translation}"`);
           if (customLines.length > 0) {
-            customGlossaryPrompt = `\nCompany-Specific Glossary (You must prioritize these translations):\n${customLines.join('\n')}`;
+            customGlossaryPrompt = `\nPreferred terms (use these when they apply):\n${customLines.join('\n')}`;
           }
         }
 
-        const contextStr = 'Context: This is a real-time conversation at a construction site, factory, or industrial workplace between a Japanese supervisor and a foreign worker. Use appropriate industry terminology (e.g., safety harness, curing, helmet) and ensure the translation is clear, polite, and natural for workplace communication.\nNuance Guidelines:\n- Translate Japanese "免許証" or "免許" (referring to driving or operating machinery qualifications) to specific terms like "驾照" (driver\'s license) or "资格证/操作证" (qualification/operation certificate) in Chinese (do not use generic "执照" which means business license).\n- Translate Chinese "驾照" or "驾驶证" back to Japanese specifically as "免許証" (or "運転免許証"), not generic "免許".\n- Apply similar high-fidelity term mappings for other languages (e.g., Vietnamese "bằng lái xe" -> "免許証", "chứng chỉ" -> "資格証").\n- Chinese "还不错" or "还不错吧" (when spoken by a worker to a supervisor) should be translated politely as "悪くないですね", "問題なさそうです", or "順調です" instead of "なかなか良いです" (which sounds condescending/patronizing in Japanese).\n- Translate Japanese "ヘルメット" (hard hat / safety helmet on a work site) to "安全帽" in Chinese, not "头盔" (which refers to motorcycle or combat helmets). In Vietnamese, use "mũ bảo hộ" or "nón bảo hộ" (safety helmet) instead of "mũ bảo hiểm" (motorcycle helmet).\n- For extremely short responses or confirmations (e.g. "예" (ko), "네" (ko), "对" (zh), "yes" (en), "ok" (en), etc.), translate them simply and directly to the equivalent confirmation in the target language (e.g., to Japanese "はい" or "了解しました"). NEVER expand them into long sentences or guess safety warnings.\nCRITICAL: You are a strict translator. You must ONLY output the translated text. NEVER explain the meaning of the input text, NEVER reply to the user, NEVER add warnings or corrections, and NEVER output any conversational comments or advice. Even if the input text is slang, vulgar, safety-critical, or inappropriate, translate it literally and output ONLY the translation.' + getGlossaryText(fromLang, toLang) + '\n' + customGlossaryPrompt;
+        const contextStr =
+          'You are a translator working on a live spoken conversation.\n' +
+          'CRITICAL: Output ONLY the translated text. Never explain the input, never reply to it, ' +
+          'never add warnings, corrections or commentary. Translate faithfully -- including slang ' +
+          'or blunt speech -- without softening, expanding or editorialising.\n' +
+          '- Keep short confirmations short. "yes", "对", "네" should become the plain equivalent ' +
+          '("はい", "OK"), never an invented sentence.\n' +
+          '- Do not assume any particular setting, industry or relationship between the speakers.' +
+          customGlossaryPrompt;
+
         if (useRuby && toLang === 'ja') {
           prompt = `${contextStr}
 Translate the following text from language code "${fromLang}" to Japanese ("ja").
@@ -125,16 +121,6 @@ Text: ${text}`;
         translation = `[${toLang}] ${text}`;
       }
     }
-
-    // Increment KV Rate Limit Counter
-    try {
-      if (currentIpCount === 0) {
-        await kv.set(ipKey, 1, { ex: 24 * 60 * 60 });
-      } else {
-        const ttl = await kv.ttl(ipKey);
-        await kv.set(ipKey, currentIpCount + 1, ttl > 0 ? { ex: ttl } : { ex: 24 * 60 * 60 });
-      }
-    } catch (e) {}
 
     return NextResponse.json({
       success: true,

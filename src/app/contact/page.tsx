@@ -49,7 +49,7 @@ export default function ContactPage() {
           <span>料金プランへ戻る</span>
         </Link>
         <div className="font-black text-sm tracking-widest text-slate-300">
-          GENBA<span className="text-emerald-400">TALK</span>
+          TALK<span className="text-emerald-400">IE</span>
         </div>
       </header>
 
@@ -188,7 +188,7 @@ export default function ContactPage() {
                 href="/"
                 className="inline-block py-3 px-6 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-bold rounded-2xl border border-slate-700 hover:scale-[1.02] active:scale-[0.98] transition-all"
               >
-                ゲンバトークへ戻る
+                Talkieへ戻る
               </Link>
             </div>
           </div>
@@ -198,7 +198,7 @@ export default function ContactPage() {
 
       {/* Footer */}
       <footer className="border-t border-slate-900/60 px-6 py-6 text-center text-[10px] text-slate-500 shrink-0 select-none">
-        <p>© 2026 GENBATALK. All rights reserved.</p>
+        <p>© 2026 Talkie. All rights reserved.</p>
       </footer>
 
     </div>
