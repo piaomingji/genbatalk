@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Check, ArrowLeft, Sparkles, Zap, Users, HelpCircle } from 'lucide-react';
 import Link from 'next/link';
+import { signIn, useSession } from 'next-auth/react';
 
 /**
  * Plans are priced by minutes of live translation, because that is what the service actually costs
@@ -17,6 +18,48 @@ import Link from 'next/link';
 export default function PricingPage() {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
   const yearly = billingCycle === 'yearly';
+  const { data: session } = useSession();
+  const [busyPlan, setBusyPlan] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Sends the customer to Stripe.
+   *
+   * Signing in comes first, because a subscription has to belong to an account: attached to a
+   * browser it would vanish the moment site data was cleared, and would not follow the customer to
+   * their phone.
+   */
+  const startCheckout = async (plan: 'plus' | 'pro') => {
+    setError(null);
+
+    if (!session?.user) {
+      await signIn('google', { callbackUrl: '/pricing' });
+      return;
+    }
+
+    setBusyPlan(plan);
+    try {
+      const res = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan, cycle: billingCycle }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.url) {
+        setError(
+          data?.error === 'plan_unavailable'
+            ? 'This plan is not available yet. Please try again later.'
+            : 'Could not start checkout. Please try again.'
+        );
+        setBusyPlan(null);
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      setError('Could not reach the payment service. Please try again.');
+      setBusyPlan(null);
+    }
+  };
 
   const plans = [
     {
@@ -36,7 +79,7 @@ export default function PricingPage() {
       buttonClass:
         'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed w-full block text-center py-3 rounded-2xl font-bold text-xs',
       popular: false,
-      href: '',
+      planId: null,
     },
     {
       name: 'Plus',
@@ -55,7 +98,7 @@ export default function PricingPage() {
       buttonClass:
         'bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-lg shadow-emerald-500/10 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
       popular: true,
-      href: '/pricing/success?plan=plus',
+      planId: 'plus' as const,
     },
     {
       name: 'Pro',
@@ -73,7 +116,7 @@ export default function PricingPage() {
       buttonClass:
         'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 hover:scale-[1.02] active:scale-[0.98] w-full block text-center py-3 rounded-2xl font-bold text-xs select-none',
       popular: false,
-      href: '/pricing/success?plan=pro',
+      planId: 'pro' as const,
     },
   ];
 
@@ -139,6 +182,12 @@ export default function PricingPage() {
           </div>
         </div>
 
+        {error && (
+          <p className="text-center text-xs text-red-300 bg-red-950/40 border border-red-900/50 rounded-2xl py-3 px-4">
+            {error}
+          </p>
+        )}
+
         {/* Plans */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
           {plans.map((plan) => {
@@ -198,10 +247,14 @@ export default function PricingPage() {
                 </div>
 
                 <div className="pt-8">
-                  {plan.href ? (
-                    <Link href={plan.href} className={plan.buttonClass}>
-                      {plan.buttonText}
-                    </Link>
+                  {plan.planId ? (
+                    <button
+                      onClick={() => startCheckout(plan.planId)}
+                      disabled={busyPlan !== null}
+                      className={`${plan.buttonClass} disabled:opacity-60 disabled:cursor-wait`}
+                    >
+                      {busyPlan === plan.planId ? 'Redirecting…' : plan.buttonText}
+                    </button>
                   ) : (
                     <button disabled className={plan.buttonClass}>
                       {plan.buttonText}

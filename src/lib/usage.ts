@@ -1,5 +1,7 @@
 import { createClient, type RedisClientType } from 'redis';
 import { NextRequest } from 'next/server';
+import { auth } from '@/lib/auth';
+import { PLANS, type PlanId, isPlanId } from '@/lib/plans';
 
 /**
  * Daily usage accounting for live translation.
@@ -18,6 +20,11 @@ import { NextRequest } from 'next/server';
  * than a paid subscription brings in.
  */
 export const FREE_SECONDS_PER_MONTH = Number(process.env.FREE_SECONDS_PER_MONTH || 600);
+
+/** Seconds granted instead once signed in -- a reason to have an account before there is a plan to buy. */
+export const SIGNED_IN_SECONDS_PER_MONTH = Number(
+  process.env.SIGNED_IN_SECONDS_PER_MONTH || FREE_SECONDS_PER_MONTH * 3
+);
 
 /**
  * Sessions may only be started this many times a day, whatever the reported usage says.
@@ -105,6 +112,100 @@ export function clientKey(req: NextRequest): { id: string; ip: string; isNew: bo
   return { id: `${random}${ip.replace(/[^a-z0-9]/gi, '').slice(0, 8)}`.slice(0, 40), ip, isNew: true };
 }
 
+/**
+ * Who to count this usage against.
+ *
+ * Signed in, that is the account -- so the allowance follows the person across devices and browsers,
+ * and clearing site data no longer hands out a fresh one. Signed out, it falls back to the device
+ * cookie, which is enough to meter a free trial.
+ */
+export interface Subscription {
+  plan: PlanId;
+  status: string;
+  customerId?: string;
+  /** Unix seconds; the plan lapses after this unless renewed. */
+  currentPeriodEnd?: number;
+}
+
+const subKey = (userId: string) => `talkie:sub:${userId}`;
+
+export async function readSubscription(userId: string): Promise<Subscription | null> {
+  try {
+    const client = await getClient();
+    const raw = await client.get(subKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Subscription;
+    if (!isPlanId(parsed.plan)) return null;
+    // Treat anything Stripe no longer considers live as no plan at all.
+    const live = parsed.status === 'active' || parsed.status === 'trialing';
+    if (!live) return null;
+    if (parsed.currentPeriodEnd && parsed.currentPeriodEnd * 1000 < Date.now()) return null;
+    return parsed;
+  } catch (e) {
+    console.error('Could not read the subscription:', e);
+    return null;
+  }
+}
+
+export async function writeSubscription(userId: string, sub: Subscription): Promise<void> {
+  try {
+    const client = await getClient();
+    await client.set(subKey(userId), JSON.stringify(sub));
+  } catch (e) {
+    console.error('Could not save the subscription:', e);
+  }
+}
+
+export async function clearSubscription(userId: string): Promise<void> {
+  try {
+    const client = await getClient();
+    await client.del(subKey(userId));
+  } catch (e) {
+    console.error('Could not clear the subscription:', e);
+  }
+}
+
+export async function usageIdentity(
+  req: NextRequest
+): Promise<{
+  id: string;
+  ip: string;
+  isNew: boolean;
+  signedIn: boolean;
+  isPaid: boolean;
+  plan: PlanId;
+  allowance: number;
+}> {
+  const device = clientKey(req);
+  try {
+    const session = await auth();
+    const userId = (session?.user as { id?: string } | undefined)?.id;
+    if (userId) {
+      const sub = await readSubscription(userId);
+      const plan: PlanId = sub?.plan ?? 'free';
+      return {
+        id: `u:${userId}`,
+        ip: device.ip,
+        isNew: false,
+        signedIn: true,
+        isPaid: plan !== 'free',
+        plan,
+        allowance: plan === 'free' ? SIGNED_IN_SECONDS_PER_MONTH : PLANS[plan].seconds,
+      };
+    }
+  } catch (e) {
+    // Never let an auth hiccup stop a translation; fall back to the device.
+    console.warn('Could not read the session; counting usage by device.', e);
+  }
+  return {
+    ...device,
+    signedIn: false,
+    isPaid: false,
+    plan: 'free',
+    allowance: FREE_SECONDS_PER_MONTH,
+  };
+}
+
 export interface UsageState {
   seconds: number;
   sessions: number;
@@ -115,12 +216,37 @@ export interface UsageState {
 }
 
 /** True when either the device or its IP address has run out of allowance. */
-export function isExhausted(u: UsageState): boolean {
+/**
+ * True when this request has run out of free allowance.
+ *
+ * The per-IP ceiling applies to everyone on the free plan, signed in or not. Signing in was briefly
+ * treated as proof of good faith and exempted -- which simply moved the loophole: ten free Google
+ * accounts would have meant ten allowances from one machine. An account is free to create, so it
+ * cannot be what grants trust. Paying is.
+ *
+ * The connection is the one thing that is awkward to multiply, so it carries the ceiling. It is not
+ * airtight either -- mobile networks rotate addresses and a VPN sidesteps it entirely -- but between
+ * the two it takes real effort to get much more than intended, which is all a free tier needs.
+ */
+export function isExhausted(
+  u: UsageState,
+  opts: { allowance?: number; isPaid?: boolean } = {}
+): boolean {
   if (!u.tracked) return false;
+
+  const allowance = opts.allowance ?? FREE_SECONDS_PER_MONTH;
+  if (u.seconds >= allowance) return true;
+
+  // Everything below is anti-abuse for the free tier. Someone paying has already identified
+  // themselves in the way that matters, and should not be caught by a shared office connection.
+  if (opts.isPaid) return false;
+  if (u.sessions >= DAILY_SESSION_LIMIT) return true;
+
+  // The connection ceiling is what stops a free allowance being multiplied by making more accounts:
+  // an account is free to create, a separate internet connection is not. Sized against the larger
+  // free allowance so a handful of genuine users behind one connection can each have theirs.
   return (
-    u.seconds >= FREE_SECONDS_PER_MONTH ||
-    u.sessions >= DAILY_SESSION_LIMIT ||
-    u.ipSeconds >= FREE_SECONDS_PER_MONTH * IP_MULTIPLIER ||
+    u.ipSeconds >= SIGNED_IN_SECONDS_PER_MONTH * IP_MULTIPLIER ||
     u.ipSessions >= DAILY_SESSION_LIMIT * IP_MULTIPLIER
   );
 }

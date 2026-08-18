@@ -8,10 +8,14 @@ import AudioWave from '@/components/AudioWave';
 import { LiveTranslateSwitchboard, Utterance } from '@/lib/liveTranslate';
 import { detectUiLang, getStrings, UiLang } from '@/lib/i18n';
 import { LANGUAGES, languageName, normalizeLanguage, speechLocale } from '@/lib/languages';
+import AccountButton from '@/components/AccountButton';
+import { signIn, useSession } from 'next-auth/react';
 
 export default function Home() {
   const [uiLang, setUiLang] = useState<UiLang>('en');
   const t = getStrings(uiLang);
+  const { data: session } = useSession();
+  const signedIn = !!session?.user;
 
   useEffect(() => {
     setUiLang(detectUiLang());
@@ -985,6 +989,8 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
+          <AccountButton t={t} />
+
           <button
             onClick={clearHistory}
             title={t.clearHistory}
@@ -1044,16 +1050,28 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Free allowance used up */}
+      {/* Free allowance used up. Someone who has not signed in is told what that would give them --
+          it is the only place the larger allowance is worth mentioning, since it is exactly the
+          moment it becomes useful. */}
       {limitReached && (
         <div className="bg-amber-950/80 border-b border-amber-900/50 px-5 py-3 text-xs text-amber-200 font-medium flex items-center justify-between gap-3 shrink-0 z-10">
-          <span>⚠️ {t.limitReached}</span>
-          <button
-            onClick={() => setLimitReached(false)}
-            className="text-amber-400 hover:text-amber-300 font-bold shrink-0 cursor-pointer"
-          >
-            {t.close}
-          </button>
+          <span>⚠️ {signedIn ? t.limitReached : t.limitReachedSignIn}</span>
+          <span className="flex items-center gap-2 shrink-0">
+            {!signedIn && (
+              <button
+                onClick={() => signIn('google')}
+                className="bg-amber-500 hover:bg-amber-400 text-amber-950 font-black px-3 py-1.5 rounded-xl transition-all cursor-pointer"
+              >
+                {t.signIn}
+              </button>
+            )}
+            <button
+              onClick={() => setLimitReached(false)}
+              className="text-amber-400 hover:text-amber-300 font-bold cursor-pointer"
+            >
+              {t.close}
+            </button>
+          </span>
         </div>
       )}
 

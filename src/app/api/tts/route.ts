@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { clientKey, consumeDailyQuota } from '@/lib/usage';
+import { consumeDailyQuota, usageIdentity } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Text too long for TTS proxy; use client-side speech synthesis fallback', { status: 413 });
     }
 
-    const { id } = clientKey(req);
+    const { id } = await usageIdentity(req);
     if (!(await consumeDailyQuota('tts', id, 300))) {
       return new NextResponse('Rate limit exceeded', { status: 429 });
     }

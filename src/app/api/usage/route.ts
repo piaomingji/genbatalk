@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { FREE_SECONDS_PER_MONTH, addSeconds, clientKey, isExhausted, readUsage } from '@/lib/usage';
+import { addSeconds, isExhausted, readUsage, usageIdentity } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
  */
 export async function POST(req: NextRequest) {
   try {
-    const { id, ip } = clientKey(req);
+    const { id, ip, isPaid, allowance } = await usageIdentity(req);
     const body = await req.json().catch(() => ({}));
     const raw = Number(body?.seconds);
     if (!Number.isFinite(raw) || raw <= 0) {
@@ -27,8 +27,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       usedSeconds: usage.seconds,
-      limitSeconds: FREE_SECONDS_PER_MONTH,
-      exhausted: isExhausted(usage),
+      limitSeconds: allowance,
+      exhausted: isExhausted(usage, { allowance, isPaid }),
     });
   } catch (error) {
     console.error('Usage report error:', error);

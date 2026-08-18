@@ -1,7 +1,15 @@
 import React from 'react';
-import { X, Settings, Sparkles } from 'lucide-react';
+import { X, Settings } from 'lucide-react';
 import Link from 'next/link';
 import { Strings } from '@/lib/i18n';
+
+interface AccountState {
+  signedIn: boolean;
+  isPaid: boolean;
+  plan: 'free' | 'plus' | 'pro';
+  allowanceSeconds: number;
+  usedSeconds: number;
+}
 
 interface SettingsModalProps {
   t: Strings;
@@ -26,7 +34,42 @@ export default function SettingsModal({
   useRuby,
   setUseRuby,
 }: SettingsModalProps) {
+  const [account, setAccount] = React.useState<AccountState | null>(null);
+
+  // Read the plan whenever the panel opens, so it reflects a subscription bought moments ago.
+  React.useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetch('/api/me')
+      .then(r => r.json())
+      .then(d => {
+        if (!cancelled) setAccount(d);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  /** Sends a subscriber to Stripe to change their card or cancel; everyone else to the plans. */
+  const manageBilling = async () => {
+    try {
+      const res = await fetch('/api/billing-portal', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data?.url) {
+        window.location.href = data.url;
+        return;
+      }
+    } catch {}
+    window.location.href = '/pricing';
+  };
+
   if (!isOpen) return null;
+
+  const minutesLeft = account
+    ? Math.max(0, Math.ceil((account.allowanceSeconds - account.usedSeconds) / 60))
+    : null;
+  const minutesTotal = account ? Math.round(account.allowanceSeconds / 60) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4">
@@ -46,28 +89,33 @@ export default function SettingsModal({
           </button>
         </div>
 
-        {/* Pro Plan Promotion Card */}
-        <div className="bg-gradient-to-r from-emerald-500/10 to-indigo-500/10 border border-emerald-500/30 rounded-2xl p-3.5 mb-4 flex items-center justify-between gap-4 shrink-0 select-none">
-          <div className="space-y-0.5">
-            <div className="text-xs font-black text-emerald-400 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Proプランで機能制限を解除</span>
-            </div>
-            <p className="text-[10px] text-slate-400 leading-normal">
-              無制限の自動通訳、リアルタイム同期などが可能になります。
-            </p>
-          </div>
-          <Link
-            href="/pricing"
-            onClick={onClose}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black px-3.5 py-2 rounded-xl transition-all shrink-0 shadow-md shadow-emerald-600/10 hover:scale-[1.02] cursor-pointer"
-          >
-            プランを見る
-          </Link>
-        </div>
-
         {/* Scrollable Content Container */}
         <div className="flex-1 overflow-y-auto space-y-6 pr-1 scrollbar-thin">
+          {/* Plan and what is left of it. */}
+          {account && (
+            <div className="bg-slate-950/40 border border-slate-800/80 rounded-2xl p-4 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-0.5 min-w-0">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                    {t.plan}
+                  </p>
+                  <p className="text-sm font-black text-slate-100 capitalize">{account.plan}</p>
+                </div>
+                <button
+                  onClick={manageBilling}
+                  className="shrink-0 text-[11px] font-bold px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  {account.isPaid ? t.managePlan : t.upgrade}
+                </button>
+              </div>
+              {minutesLeft !== null && minutesTotal !== null && (
+                <p className="text-[11px] text-slate-400">
+                  {t.minutesLeft(minutesLeft, minutesTotal)}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Autoplay Audio toggle */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">

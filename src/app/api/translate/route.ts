@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { clientKey, consumeDailyQuota } from '@/lib/usage';
+import { consumeDailyQuota, usageIdentity } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
 
-    const { id } = clientKey(req);
+    const { id } = await usageIdentity(req);
     if (!(await consumeDailyQuota('txt', id, 300))) {
       return NextResponse.json({ error: 'daily_limit' }, { status: 429 });
     }

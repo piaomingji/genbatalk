@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Outfit } from "next/font/google";
 import "./globals.css";
+import Providers from "@/components/Providers";
 
 const outfit = Outfit({
   variable: "--font-outfit",
@@ -9,13 +10,13 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://genbatalk.vercel.app"),
+  metadataBase: new URL("https://talkie.smart-ai-portal.com"),
   title: "Talkie - Real-time voice translation",
   description: "Real-time voice translation between any two languages. Speak naturally and be understood, in 17 languages.",
   openGraph: {
     title: "Talkie - Real-time voice translation",
     description: "Real-time voice translation between any two languages. Speak naturally and be understood, in 17 languages.",
-    url: "https://genbatalk.vercel.app",
+    url: "https://talkie.smart-ai-portal.com",
     siteName: "Talkie",
     images: [
       {
@@ -43,7 +44,8 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${outfit.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col bg-slate-950 font-sans text-slate-100">
-        {children}
+        <Providers>
+        {children}</Providers>
       </body>
     </html>
   );

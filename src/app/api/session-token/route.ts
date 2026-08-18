@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  FREE_SECONDS_PER_MONTH,
   DAILY_SESSION_LIMIT,
   DEVICE_COOKIE,
   addSession,
-  clientKey,
+  usageIdentity,
   isExhausted,
   readUsage,
 } from '@/lib/usage';
@@ -27,15 +26,15 @@ export async function POST(req: NextRequest) {
   try {
     // The browser cannot reach Google without one of these tokens, so this is the chokepoint where
     // free usage is capped. Check before spending anything.
-    const { id, ip, isNew } = clientKey(req);
+    const { id, ip, isNew, isPaid, allowance } = await usageIdentity(req);
     const usage = await readUsage(id, ip);
 
     // Blocked when either this device or its IP address has run out for the day.
-    if (isExhausted(usage)) {
+    if (isExhausted(usage, { allowance, isPaid })) {
       return NextResponse.json(
         {
           error: 'daily_limit',
-          limitSeconds: FREE_SECONDS_PER_MONTH,
+          limitSeconds: allowance,
           usedSeconds: usage.seconds,
         },
         { status: 429 }
@@ -114,7 +113,7 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       token,
       deviceId: id,
-      limitSeconds: FREE_SECONDS_PER_MONTH,
+      limitSeconds: allowance,
       usedSeconds: usage.seconds,
     });
     if (isNew) {
