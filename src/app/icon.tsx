@@ -8,48 +8,48 @@ export const size = {
 };
 export const contentType = 'image/png';
 
+/**
+ * Two speech bubbles, overlapping.
+ *
+ * The mark carries no letters on purpose: this app is used by people who may not read the alphabet
+ * the name is written in, and a symbol needs no translation. Two bubbles in two colours say what the
+ * app is for -- two languages meeting -- and the shape stays legible at the size a home screen
+ * actually shows it.
+ *
+ * It replaces a microphone with "GT" on it, which named a product that no longer exists and read as
+ * a recording app.
+ */
 export default function Icon() {
   return new ImageResponse(
     (
       <div
         style={{
-          background: 'linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e1b4b 100%)',
+          background: '#0b1020',
           width: '100%',
           height: '100%',
           display: 'flex',
-          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          border: '16px solid #6366f1',
-          borderRadius: 140,
-          position: 'relative',
         }}
       >
-        {/* Glow behind mic */}
-        <div
-          style={{
-            position: 'absolute',
-            width: '260px',
-            height: '260px',
-            background: 'radial-gradient(circle, rgba(16,185,129,0.3) 0%, rgba(99,102,241,0) 70%)',
-            borderRadius: '130px',
-          }}
-        />
-        <div style={{ fontSize: 200, zIndex: 10, display: 'flex' }}>🎙️</div>
-        <div 
-          style={{ 
-            color: '#ffffff', 
-            fontSize: 48, 
-            fontWeight: 900, 
-            marginTop: 10, 
-            letterSpacing: 4,
-            fontFamily: 'sans-serif',
-            zIndex: 10,
-            textShadow: '0 4px 10px rgba(0,0,0,0.5)'
-          }}
-        >
-          GT
-        </div>
+        <svg width="512" height="512" viewBox="0 0 512 512">
+          {/* Held inside the safe area. The manifest offers this icon as "maskable", which lets
+              Android crop it to whatever shape the launcher uses -- a circle, a squircle -- and
+              anything near the edge is lost in the process. Everything is scaled in so the tails
+              survive the crop. */}
+          <g transform="translate(256 256) scale(0.75) translate(-256 -256)">
+          {/* Rear bubble: the first speaker. Tail on the left, pointing away from the pair. */}
+          <path
+            d="M128 118 h196 a54 54 0 0 1 54 54 v112 a54 54 0 0 1 -54 54 h-102 l-68 60 v-60 h-26 a54 54 0 0 1 -54 -54 v-112 a54 54 0 0 1 54 -54 z"
+            fill="#6366f1"
+          />
+          {/* Front bubble: the reply, overlapping so the two read as one conversation. */}
+          <path
+            d="M188 212 h196 a54 54 0 0 1 54 54 v112 a54 54 0 0 1 -54 54 h-26 v60 l-68 -60 h-102 a54 54 0 0 1 -54 -54 v-112 a54 54 0 0 1 54 -54 z"
+            fill="#10b981"
+          />
+          </g>
+        </svg>
       </div>
     ),
     {
