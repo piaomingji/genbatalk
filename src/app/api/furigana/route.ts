@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { assistLimit, consumeDailyQuota, usageIdentity } from '@/lib/usage';
 
 export const runtime = 'nodejs';
 
@@ -32,6 +33,16 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return NextResponse.json({ text });
+
+    // This route is reachable without signing in and every call costs money, so it needs a ceiling
+    // of its own. Counted after the exits above, so text with no kanji costs nobody anything, and
+    // an exhausted allowance returns the text unannotated rather than failing -- consistent with
+    // how the rest of this route treats trouble.
+    const { id, isPaid } = await usageIdentity(req);
+    if (!(await consumeDailyQuota('ruby', id, assistLimit(isPaid)))) {
+      console.warn('Furigana allowance spent; returning the text unannotated.');
+      return NextResponse.json({ text });
+    }
 
     const prompt =
       'Add furigana to the Japanese text below using HTML ruby tags.\n' +

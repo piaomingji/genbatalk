@@ -101,6 +101,15 @@ function thisMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
+/**
+ * The key usage is counted against once someone is signed in.
+ *
+ * Written once and used everywhere, because two places building the same string by hand is how a
+ * counter ends up being written under one name and read under another -- which is precisely the
+ * bug that let free allowances be handed out over and over in the other three apps.
+ */
+export const usageIdOf = (userId: string) => `u:${userId}`;
+
 /** Identifies the client. The cookie is the primary key; the IP is a fallback for first contact. */
 export function clientKey(req: NextRequest): { id: string; ip: string; isNew: boolean } {
   const ip = ipKeyOf(req);
@@ -129,40 +138,92 @@ export interface Subscription {
 
 const subKey = (userId: string) => `talkie:sub:${userId}`;
 
-export async function readSubscription(userId: string): Promise<Subscription | null> {
+/**
+ * Which account a Stripe customer belongs to.
+ *
+ * Subscription events carry our account id in their metadata, but a refund does not: `charge.refunded`
+ * names a customer and nothing else. Without a way back from customer to account, a refund can be
+ * received, acknowledged, and still leave the refunded person on a paid plan.
+ */
+const customerKey = (customerId: string) => `talkie:cus:${customerId}`;
+
+/**
+ * The stored record exactly as written, lapsed plans included.
+ *
+ * `readSubscription` deliberately reports nothing once a plan is no longer live, which is right for
+ * deciding what someone may use and wrong for opening the billing portal -- a customer whose card
+ * has just been declined is precisely the person who needs to get to it.
+ */
+export async function readSubscriptionRecord(userId: string): Promise<Subscription | null> {
   try {
     const client = await getClient();
     const raw = await client.get(subKey(userId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Subscription;
-    if (!isPlanId(parsed.plan)) return null;
-    // Treat anything Stripe no longer considers live as no plan at all.
-    const live = parsed.status === 'active' || parsed.status === 'trialing';
-    if (!live) return null;
-    if (parsed.currentPeriodEnd && parsed.currentPeriodEnd * 1000 < Date.now()) return null;
-    return parsed;
+    return isPlanId(parsed.plan) ? parsed : null;
   } catch (e) {
     console.error('Could not read the subscription:', e);
     return null;
   }
 }
 
+export async function readSubscription(userId: string): Promise<Subscription | null> {
+  const parsed = await readSubscriptionRecord(userId);
+  if (!parsed) return null;
+  // Treat anything Stripe no longer considers live as no plan at all.
+  const live = parsed.status === 'active' || parsed.status === 'trialing';
+  if (!live) return null;
+  if (parsed.currentPeriodEnd && parsed.currentPeriodEnd * 1000 < Date.now()) return null;
+  return parsed;
+}
+
 export async function writeSubscription(userId: string, sub: Subscription): Promise<void> {
   try {
     const client = await getClient();
     await client.set(subKey(userId), JSON.stringify(sub));
+    // Written on every save rather than once, so the mapping repairs itself for anyone who
+    // subscribed before it existed, the next time Stripe reports anything about them.
+    if (sub.customerId) await client.set(customerKey(sub.customerId), userId);
   } catch (e) {
     console.error('Could not save the subscription:', e);
   }
 }
 
-export async function clearSubscription(userId: string): Promise<void> {
+export async function findUserByCustomerId(customerId: string): Promise<string | null> {
   try {
     const client = await getClient();
-    await client.del(subKey(userId));
+    return await client.get(customerKey(customerId));
   } catch (e) {
-    console.error('Could not clear the subscription:', e);
+    console.error('Could not look up the customer:', e);
+    return null;
   }
+}
+
+/** Records the Stripe customer for an account without otherwise changing the plan. */
+export async function linkStripeCustomer(userId: string, customerId: string): Promise<void> {
+  const existing = await readSubscriptionRecord(userId);
+  await writeSubscription(userId, {
+    plan: existing?.plan ?? 'free',
+    status: existing?.status ?? 'none',
+    customerId,
+    currentPeriodEnd: existing?.currentPeriodEnd,
+  });
+}
+
+/**
+ * Drops an account to the free plan while keeping its customer id.
+ *
+ * Deleting the record outright also throws away the only link to their Stripe customer, which is
+ * what the billing portal needs -- and someone who has just cancelled is quite likely to want their
+ * invoices, or to subscribe again.
+ */
+export async function downgradeToFree(userId: string, status: string): Promise<void> {
+  const existing = await readSubscriptionRecord(userId);
+  await writeSubscription(userId, {
+    plan: 'free',
+    status,
+    customerId: existing?.customerId,
+  });
 }
 
 export async function usageIdentity(
@@ -184,7 +245,7 @@ export async function usageIdentity(
       const sub = await readSubscription(userId);
       const plan: PlanId = sub?.plan ?? 'free';
       return {
-        id: `u:${userId}`,
+        id: usageIdOf(userId),
         ip: device.ip,
         isNew: false,
         signedIn: true,
@@ -307,6 +368,30 @@ export async function addSeconds(id: string, ip: string, seconds: number): Promi
   }
 }
 
+/**
+ * Puts an account's monthly allowance back to full.
+ *
+ * Called when someone starts paying, because the alternative is indefensible: the counter runs
+ * across plans, so a person who had used 25 of their free 30 minutes and then bought the 60-minute
+ * plan would find 35 minutes waiting for them. They would have paid, watched the number go up by
+ * less than they bought, and been entirely right to complain.
+ *
+ * Only the account's own tally is cleared. The per-IP figures are left alone -- they are an
+ * anti-abuse measure for the free tier, they do not apply to anyone paying, and clearing them would
+ * turn one subscription into a way to wipe the ceiling for a whole office.
+ */
+export async function resetMonthlyUsage(userId: string): Promise<void> {
+  try {
+    const client = await getClient();
+    await client.del(`talkie:sec:${usageIdOf(userId)}:${thisMonth()}`);
+    console.warn(`allowance reset to full for ${userId}`);
+  } catch (e) {
+    // Not worth failing the webhook over: the customer keeps their plan either way, and the
+    // counter clears by itself at the turn of the month.
+    console.error('Could not reset the monthly allowance:', e);
+  }
+}
+
 export async function addSession(id: string, ip: string): Promise<void> {
   const day = today();
   try {
@@ -318,6 +403,21 @@ export async function addSession(id: string, ip: string): Promise<void> {
   } catch (e) {
     console.error('Could not record session start:', e);
   }
+}
+
+/**
+ * How many calls a day each supporting endpoint will serve.
+ *
+ * These endpoints -- proofreading, furigana, text translation, speech -- each cost a little money
+ * per call and are reachable without signing in, so an unmetered one is an open invoice. The figure
+ * is set well above what a day of real conversation produces; it is there to bound abuse, not to
+ * ration ordinary use. Paying customers get a higher ceiling because their conversations are longer.
+ */
+export const ASSIST_CALLS_PER_DAY = Number(process.env.ASSIST_CALLS_PER_DAY || 400);
+export const PAID_ASSIST_CALLS_PER_DAY = Number(process.env.PAID_ASSIST_CALLS_PER_DAY || 3000);
+
+export function assistLimit(isPaid: boolean): number {
+  return isPaid ? PAID_ASSIST_CALLS_PER_DAY : ASSIST_CALLS_PER_DAY;
 }
 
 /**

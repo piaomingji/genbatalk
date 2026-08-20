@@ -141,8 +141,8 @@ export default function TokushohoPage() {
                 <span className="block text-[10px] font-bold text-slate-500 mt-0.5">When the service starts</span>
               </dt>
               <dd className="mt-1 text-slate-400 sm:col-span-2 sm:mt-0">
-                お支払い手続き完了後、即時にご利用可能となります。各プランに含まれる通訳時間は、ご契約日を起点とする1か月ごとに更新されます。
-                <span className="block text-[10px] text-slate-500 mt-2 leading-relaxed border-t border-slate-800/60 pt-2">Access begins immediately after payment. The minutes included in each plan reset monthly from the date you subscribe.</span>
+                お支払い手続き完了後、即時にご利用可能となります。各プランに含まれる通訳時間は、ご契約と同時に満額付与され、以後は毎月1日（日本時間 午前9時）に満額へ更新されます。当月の未使用分は翌月に繰り越されません。
+                <span className="block text-[10px] text-slate-500 mt-2 leading-relaxed border-t border-slate-800/60 pt-2">Access begins immediately after payment. Your plan&apos;s minutes are granted in full when you subscribe, and reset to full on the first of each month (09:00 Japan time). Unused minutes do not carry over.</span>
               </dd>
             </div>
 

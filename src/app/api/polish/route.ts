@@ -1,5 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { assistLimit, consumeDailyQuota, usageIdentity } from '@/lib/usage';
+
 export const runtime = 'nodejs';
+
+/**
+ * The longest draft worth proofreading.
+ *
+ * A single spoken turn is a sentence or two. Anything approaching this length did not come from a
+ * conversation, and the prompt is billed by the size of what goes into it, so there is no reason to
+ * pay for a stranger's essay.
+ */
+const MAX_INPUT_CHARS = 2000;
 
 /**
  * Smooths a translation that already exists.
@@ -27,8 +38,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'draft is required' }, { status: 400 });
     }
 
+    // Over-long input and a spent allowance both give back the draft untouched rather than an
+    // error: proofreading is a finishing touch, and the message it belongs to is already correct
+    // and already on screen. Failing loudly here would take a working translation away.
+    if (draft.length > MAX_INPUT_CHARS || source.length > MAX_INPUT_CHARS) {
+      return NextResponse.json({ text: draft });
+    }
+
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return NextResponse.json({ text: draft });
+
+    // Counted only now, so the cheap exits above cost nobody their allowance.
+    const { id, isPaid } = await usageIdentity(req);
+    if (!(await consumeDailyQuota('polish', id, assistLimit(isPaid)))) {
+      console.warn('Proofreading allowance spent; returning the draft as it is.');
+      return NextResponse.json({ text: draft });
+    }
 
     const customLines = customGlossary
       .filter((item: any) => item?.source && item?.translation)

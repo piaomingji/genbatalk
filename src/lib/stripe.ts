@@ -3,9 +3,10 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 /**
  * A very small Stripe client, spoken over their REST API directly.
  *
- * The official SDK would do the same work, but this app needs exactly three things -- start a
- * checkout, open the billing portal, and verify a webhook -- and each is a single request. Talking
- * to the API directly keeps a large dependency out of a project that otherwise has almost none.
+ * The official SDK would do the same work, but this app needs only a handful of calls -- start a
+ * checkout, open the billing portal, look a customer up, end a subscription, and verify a webhook --
+ * and each is a single request. Talking to the API directly keeps a large dependency out of a
+ * project that otherwise has almost none.
  */
 const API = 'https://api.stripe.com/v1';
 
@@ -24,20 +25,31 @@ function encode(params: Record<string, string | number | undefined>): string {
   return body.toString();
 }
 
-async function post<T>(path: string, params: Record<string, string | number | undefined>): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    method: 'POST',
+async function request<T>(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  params: Record<string, string | number | undefined> = {}
+): Promise<T> {
+  const encoded = encode(params);
+  // Stripe reads GET parameters from the query string; everything else from the body.
+  const url = method === 'GET' && encoded ? `${API}${path}?${encoded}` : `${API}${path}`;
+  const res = await fetch(url, {
+    method,
     headers: {
       Authorization: `Bearer ${secretKey()}`,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: encode(params),
+    body: method === 'GET' ? undefined : encoded,
   });
   const json = await res.json();
   if (!res.ok) {
     throw new Error(json?.error?.message || `Stripe responded ${res.status}`);
   }
   return json as T;
+}
+
+function post<T>(path: string, params: Record<string, string | number | undefined>): Promise<T> {
+  return request<T>('POST', path, params);
 }
 
 export interface CheckoutSession {
@@ -82,6 +94,48 @@ export function createBillingPortalSession(opts: {
     customer: opts.customerId,
     return_url: opts.returnUrl,
   });
+}
+
+/**
+ * Finds the Stripe customer belonging to an email address.
+ *
+ * Used only as a fallback for opening the billing portal. The customer id is normally recorded when
+ * the subscription is created, but anyone who subscribed before that was being saved has no id on
+ * file, and telling them to contact support in order to cancel is precisely the sort of dead end the
+ * portal exists to avoid. Stripe matches the address exactly, so this finds nothing if the person
+ * paid with a different address than they signed in with -- an acceptable miss for a fallback.
+ */
+export async function findCustomerIdByEmail(email: string): Promise<string | undefined> {
+  const found = await request<{ data: Array<{ id: string }> }>('GET', '/customers', {
+    email,
+    limit: 1,
+  });
+  return found.data?.[0]?.id;
+}
+
+/** Every subscription on a customer that Stripe still considers live. */
+export async function listLiveSubscriptions(
+  customerId: string
+): Promise<Array<{ id: string; status: string }>> {
+  const found = await request<{ data: Array<{ id: string; status: string }> }>(
+    'GET',
+    '/subscriptions',
+    { customer: customerId, status: 'all', limit: 20 }
+  );
+  return (found.data || []).filter(
+    s => s.status !== 'canceled' && s.status !== 'incomplete_expired'
+  );
+}
+
+/**
+ * Ends a subscription immediately.
+ *
+ * Reserved for refunds. A customer cancelling of their own accord is cancelled at the period end
+ * instead -- they paid for the month and should keep it -- but money that has been handed back
+ * should not leave a subscription behind to bill again next month.
+ */
+export function cancelSubscriptionNow(subscriptionId: string): Promise<unknown> {
+  return request('DELETE', `/subscriptions/${subscriptionId}`);
 }
 
 /**
