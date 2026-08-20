@@ -226,6 +226,26 @@ export async function downgradeToFree(userId: string, status: string): Promise<v
   });
 }
 
+/**
+ * Removes an account's subscription record entirely, customer id included.
+ *
+ * Unlike `downgradeToFree`, this is for a record that should never have existed -- a plan granted by
+ * a test-mode webhook, say, whose Stripe customer belongs to an environment the live keys cannot
+ * see. Keeping that customer id would be worse than losing it: the billing portal would try to open
+ * a customer that does not exist and fail for reasons nobody could work out from the error.
+ */
+export async function deleteSubscription(userId: string): Promise<void> {
+  try {
+    const client = await getClient();
+    const existing = await readSubscriptionRecord(userId);
+    await client.del(subKey(userId));
+    if (existing?.customerId) await client.del(customerKey(existing.customerId));
+  } catch (e) {
+    console.error('Could not delete the subscription:', e);
+    throw e;
+  }
+}
+
 export async function usageIdentity(
   req: NextRequest
 ): Promise<{
