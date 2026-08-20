@@ -113,6 +113,31 @@ export async function findCustomerIdByEmail(email: string): Promise<string | und
   return found.data?.[0]?.id;
 }
 
+/** Only the parts of a Stripe subscription this app reads. */
+export interface StripeSubscription {
+  id: string;
+  status: string;
+  customer?: string;
+  current_period_end?: number;
+  metadata?: Record<string, string>;
+  items?: { data?: Array<{ price?: { id?: string }; current_period_end?: number }> };
+}
+
+/**
+ * Fetches a subscription by id.
+ *
+ * Lets the webhook work out what was bought from a `checkout.session.completed` event alone, rather
+ * than waiting for a `customer.subscription.*` event to arrive. Which of those events an endpoint
+ * receives depends on what someone ticked in the Stripe dashboard, and a plan that is granted only
+ * when a particular checkbox happens to be set is a plan that will one day not be granted -- as
+ * happened here: the first live purchase went through, Stripe reported success, and the account
+ * stayed on the free tier because `customer.subscription.created` was not among the subscribed
+ * events.
+ */
+export function retrieveSubscription(subscriptionId: string): Promise<StripeSubscription> {
+  return request<StripeSubscription>('GET', `/subscriptions/${subscriptionId}`);
+}
+
 /** Every subscription on a customer that Stripe still considers live. */
 export async function listLiveSubscriptions(
   customerId: string
