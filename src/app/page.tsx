@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, RefreshCw, Volume2, Sparkles, Mic, MicOff, Info, UserCheck, Languages } from 'lucide-react';
+import { Settings, RefreshCw, Volume2, Mic, MicOff, Info, UserCheck, Languages } from 'lucide-react';
+import Mark from '@/components/Mark';
 import Timeline, { ChatMessage } from '@/components/Timeline';
 import SettingsModal from '@/components/SettingsModal';
 import AudioWave from '@/components/AudioWave';
@@ -976,9 +977,10 @@ export default function Home() {
       {/* Top Header */}
       <header className="h-16 shrink-0 flex items-center justify-between px-5 bg-slate-950/80 border-b border-slate-900/60 backdrop-blur-md z-20">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-indigo-500/10">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
+          {/* The app's own mark, the same one on the home screen and the browser tab. This used to
+              be a stock sparkle in a purple gradient tile -- a generic "this is AI" badge that said
+              nothing about what Talkie does and matched none of the icons. */}
+          <Mark className="w-9 h-9 shrink-0" />
           <div>
             <h1 className="text-sm font-black tracking-wider text-slate-100 uppercase">Talkie</h1>
             <div className="flex items-center gap-1.5 mt-0.5">
