@@ -175,6 +175,34 @@ export default function Home() {
   };
 
   /**
+   * Whether the microphone we are holding can still hear anything.
+   *
+   * `MediaStream.active` is not enough, and trusting it made declining a phone call deafen the app
+   * until the page was reloaded. An interruption leaves iOS handing back a track that still belongs
+   * to an active stream and still reports itself as live -- but permanently muted. No samples ever
+   * arrive again, while everything the app checked said the microphone was fine, so it went on
+   * capturing silence and pressing the button again changed nothing.
+   */
+  const microphoneIsLive = (): boolean => {
+    const track = audioStreamRef.current?.getAudioTracks()[0];
+    return !!track && track.readyState === 'live' && !track.muted;
+  };
+
+  /** Drops the microphone and its audio graph so the next turn builds a fresh one. */
+  const discardMicrophone = () => {
+    audioStreamRef.current?.getTracks().forEach(track => track.stop());
+    audioStreamRef.current = null;
+    if (mediaSourceRef.current) {
+      try { mediaSourceRef.current.disconnect(); } catch {}
+      mediaSourceRef.current = null;
+    }
+    if (scriptProcessorRef.current) {
+      try { scriptProcessorRef.current.disconnect(); } catch {}
+      scriptProcessorRef.current = null;
+    }
+  };
+
+  /**
    * Returns a usable AudioContext, creating one if we don't have a live one.
    *
    * Two things made the old version fail with "AudioContext not initialized":
@@ -189,7 +217,10 @@ export default function Home() {
 
     const existing = audioContextRef.current;
     if (existing && existing.state !== 'closed') {
-      if (existing.state === 'suspended') existing.resume();
+      // Anything that is not running gets resumed, rather than only 'suspended'. Safari has a
+      // non-standard 'interrupted' state that a phone call puts the context into, and it stays
+      // there until something asks it to resume.
+      if (existing.state !== 'running') existing.resume().catch(() => {});
       return existing;
     }
     const ctx: AudioContext = new AudioContextClass();
@@ -448,7 +479,7 @@ export default function Home() {
     const warm =
       engineRef.current?.isOpen &&
       scriptProcessorRef.current &&
-      audioStreamRef.current?.active &&
+      microphoneIsLive() &&
       audioContextRef.current?.state === 'running';
 
     if (warm) {
@@ -462,10 +493,27 @@ export default function Home() {
     setInterimTranscript(t.connecting);
 
     try {
+      // A muted-but-live track has to be released before getUserMedia will hand back a working
+      // one; asking while still holding the dead track returns the dead track.
+      if (!microphoneIsLive()) discardMicrophone();
+
       let stream = audioStreamRef.current;
-      if (!stream || !stream.active) {
+      if (!stream) {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioStreamRef.current = stream;
+
+        // Nothing reaches the app as an error when a call takes the microphone away, so watch the
+        // track itself. A turn that has gone deaf then ends visibly, instead of sitting there
+        // looking like it is still listening.
+        const track = stream.getAudioTracks()[0];
+        const onMicrophoneLost = () => {
+          if (!isListeningRef.current) return;
+          handleStopListen();
+          setNetworkError(`⚠️ ${t.micInterrupted}`);
+          setTimeout(() => setNetworkError(null), 6000);
+        };
+        track?.addEventListener('ended', onMicrophoneLost);
+        track?.addEventListener('mute', onMicrophoneLost);
       }
 
       // Both directions stay connected for the whole conversation; the button only decides which of
