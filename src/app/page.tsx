@@ -753,6 +753,45 @@ export default function Home() {
     setInterimTranscript('');
   };
 
+  /**
+   * A long interruption invalidates the translation sessions, whatever they claim about themselves.
+   *
+   * `isOpen` asks the WebSocket for its readyState, and a socket whose network vanished underneath
+   * it keeps answering OPEN until the browser finally gives up -- which can take minutes. So after a
+   * phone call the app believed both sessions were connected, took the fast path, and fed audio into
+   * sockets that would never answer. Neither button produced a translation and nothing anywhere
+   * looked wrong: the microphone was live, the audio graph was producing frames, the sessions
+   * reported themselves open.
+   *
+   * Hiding the page for more than a moment is the one reliable signal that this may have happened.
+   * Calling stop() is the part that matters -- the reconnect path only rebuilds a session it can see
+   * is closed, and this is exactly the case where it cannot see that.
+   */
+  useEffect(() => {
+    let hiddenAt = 0;
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      const awayMs = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = 0;
+      // A glance at another app does not break a socket; a call, or a locked screen, can.
+      if (awayMs < 1000) return;
+
+      console.warn(`Away for ${Math.round(awayMs / 1000)}s; reconnecting on the next turn.`);
+      if (isListeningRef.current) handleStopListen();
+      engineRef.current?.stop();
+      engineRef.current = null;
+      discardAudioPipeline();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // NOTE: for a while this played the audio the translation model itself produces, instead of
   // synthesising speech from the text. It saves a round trip and the model pays for that audio
   // whether it is used or not -- but it does not work on a single shared device. The model interprets
