@@ -992,6 +992,12 @@ export default function Home() {
             `/api/tts?lang=${langCode}&rate=${rate}&text=${encodeURIComponent(segment)}`
           );
           if (!res.ok) throw new Error(`TTS proxy responded ${res.status}`);
+          // Which voice actually answered. The route falls back silently by design -- speech going
+          // quiet would be worse than speech sounding plain -- so without this there is no way to
+          // tell a working Cloud TTS key from a missing one by listening.
+          if (segment === segments[0]) {
+            dbg(`speech source: ${res.headers.get('X-Speech-Source') || 'unknown'}`);
+          }
           return ctx.decodeAudioData(await res.arrayBuffer());
         })
       );
