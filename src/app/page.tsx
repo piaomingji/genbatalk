@@ -168,6 +168,10 @@ export default function Home() {
   const isSpeechPlayingRef = useRef<boolean>(false);
   const speechWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMicClickRef = useRef<number>(0);
+  /** Counts audio callbacks. Proof that the capture graph is alive, not merely that it exists. */
+  const audioFramesRef = useRef<number>(0);
+  const captureWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rebuiltThisTurnRef = useRef<boolean>(false);
 
   const setListeningState = (val: boolean) => {
     setIsListening(val);
@@ -188,8 +192,21 @@ export default function Home() {
     return !!track && track.readyState === 'live' && !track.muted;
   };
 
-  /** Drops the microphone and its audio graph so the next turn builds a fresh one. */
-  const discardMicrophone = () => {
+  /** Whether audio is actually reaching us: a live microphone, a graph, and a running context. */
+  const audioPathIsHealthy = (): boolean =>
+    microphoneIsLive() &&
+    !!scriptProcessorRef.current &&
+    audioContextRef.current?.state === 'running';
+
+  /**
+   * Throws away the whole capture path -- microphone, graph and AudioContext alike.
+   *
+   * The context goes too, deliberately. Answering a phone call and hanging up leaves Safari's
+   * context in a state that `resume()` reports as handled and that never actually produces another
+   * audio callback; releasing only the microphone rebuilt a fresh graph on top of a dead context
+   * and stayed silent. Building a new context costs a few milliseconds and only happens on recovery.
+   */
+  const discardAudioPipeline = () => {
     audioStreamRef.current?.getTracks().forEach(track => track.stop());
     audioStreamRef.current = null;
     if (mediaSourceRef.current) {
@@ -199,6 +216,12 @@ export default function Home() {
     if (scriptProcessorRef.current) {
       try { scriptProcessorRef.current.disconnect(); } catch {}
       scriptProcessorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      if (audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch {}
+      }
+      audioContextRef.current = null;
     }
   };
 
@@ -464,39 +487,68 @@ export default function Home() {
     }
   };
 
+  /**
+   * Notices a turn that believes it is listening but is not receiving any audio.
+   *
+   * Every check the app can make about the microphone can pass while no samples arrive -- which is
+   * exactly what a phone call leaves behind, and what made the app go quietly deaf twice. Counting
+   * the audio callbacks is the one test that cannot be fooled: either the graph is producing frames
+   * or it is not. If none arrive shortly after a turn starts, the path is rebuilt once, and if that
+   * still yields nothing the turn ends with a message rather than pretending to listen.
+   */
+  const armCaptureWatchdog = (speaker: 'staff' | 'worker') => {
+    if (captureWatchdogRef.current) clearTimeout(captureWatchdogRef.current);
+    const framesAtStart = audioFramesRef.current;
+    captureWatchdogRef.current = setTimeout(() => {
+      captureWatchdogRef.current = null;
+      if (!isListeningRef.current) return;
+      if (audioFramesRef.current !== framesAtStart) return; // audio is flowing; nothing to do
+
+      if (rebuiltThisTurnRef.current) {
+        console.error('The capture path produced no audio even after a rebuild.');
+        handleStopListen();
+        setNetworkError(`⚠️ ${t.micInterrupted}`);
+        setTimeout(() => setNetworkError(null), 6000);
+        return;
+      }
+      console.warn('No audio arrived after starting a turn; rebuilding the capture path.');
+      rebuiltThisTurnRef.current = true;
+      discardAudioPipeline();
+      handleStartListen(speaker);
+    }, 2500);
+  };
+
   const handleStartListen = async (speaker: 'staff' | 'worker') => {
-    // Created up front so it happens inside the click handler, which is what browsers require.
-    ensureAudioContext();
     setMicPermissionError(false);
     setActiveSpeaker(speaker);
     activeSpeakerRef.current = speaker;
     setListeningState(true);
 
+    // Anything an interruption may have broken goes before a context is created or resumed, so the
+    // rest of this runs against a path that is either healthy or absent -- never half-dead.
+    if (!audioPathIsHealthy()) discardAudioPipeline();
+
+    // Created up front so it happens inside the click handler, which is what browsers require.
+    ensureAudioContext();
+
     // If the microphone, the audio graph and both sessions are all still up from the last turn --
     // which is the normal case now that nothing is torn down between turns -- start capturing
     // immediately. Waiting for the async path below is what made the first second of speech go
     // missing unless the user waited for the status text to change.
-    const warm =
-      engineRef.current?.isOpen &&
-      scriptProcessorRef.current &&
-      microphoneIsLive() &&
-      audioContextRef.current?.state === 'running';
+    const warm = engineRef.current?.isOpen && audioPathIsHealthy();
 
     if (warm) {
       engineRef.current!.setActiveSpeaker(speaker);
       setInterimTranscript(t.listening);
       reconnectCountRef.current = 0;
       startUsageReporting();
+      armCaptureWatchdog(speaker);
       return;
     }
 
     setInterimTranscript(t.connecting);
 
     try {
-      // A muted-but-live track has to be released before getUserMedia will hand back a working
-      // one; asking while still holding the dead track returns the dead track.
-      if (!microphoneIsLive()) discardMicrophone();
-
       let stream = audioStreamRef.current;
       if (!stream) {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -609,6 +661,10 @@ export default function Home() {
       processor.connect(actx.destination);
 
       processor.onaudioprocess = (e) => {
+        // Counted before anything can return early: this is the proof that the graph is alive.
+        audioFramesRef.current++;
+        rebuiltThisTurnRef.current = false;
+
         if (!isListeningRef.current) return;
         // Never feed our own spoken translation back into the microphone.
         if (isSpeechPlayingRef.current) return;
@@ -617,6 +673,8 @@ export default function Home() {
         // model expects and pacing them into 100ms chunks.
         engineRef.current?.sendAudio(e.inputBuffer.getChannelData(0), actx.sampleRate);
       };
+
+      armCaptureWatchdog(speaker);
     } catch (err: any) {
       console.error('Failed to start live translation:', err);
       if (err?.code === 'daily_limit' || err?.message === 'daily_limit') {
@@ -652,6 +710,12 @@ export default function Home() {
     setListeningState(false);
     reconnectCountRef.current = 0;
     stopUsageReporting();
+
+    if (captureWatchdogRef.current) {
+      clearTimeout(captureWatchdogRef.current);
+      captureWatchdogRef.current = null;
+    }
+    rebuiltThisTurnRef.current = false;
 
     engineRef.current?.releaseMicrophone();
     // When the user has just finished speaking, leave "翻訳しています..." up until the result
