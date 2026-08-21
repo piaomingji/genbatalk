@@ -981,18 +981,20 @@ export default function Home() {
       }
 
       const segments = splitForSpeech(cleanText);
+      const rate = settingsRef.current.speechSpeed || 1;
 
       // Requested together, then played in order: the voice is consistent and there is no gap
-      // between pieces while a later one is still being fetched.
+      // between pieces while a later one is still being fetched. The speed goes to the service
+      // rather than being applied to playback, which would shift the pitch along with it.
       const buffers = await Promise.all(
         segments.map(async (segment) => {
-          const res = await fetch(`/api/tts?lang=${langCode}&text=${encodeURIComponent(segment)}`);
+          const res = await fetch(
+            `/api/tts?lang=${langCode}&rate=${rate}&text=${encodeURIComponent(segment)}`
+          );
           if (!res.ok) throw new Error(`TTS proxy responded ${res.status}`);
           return ctx.decodeAudioData(await res.arrayBuffer());
         })
       );
-
-      const rate = settingsRef.current.speechSpeed || 1;
       let startAt = ctx.currentTime + 0.05;
       let totalMs = 0;
 
@@ -1003,7 +1005,8 @@ export default function Home() {
       buffers.forEach((buffer, i) => {
         const source = ctx.createBufferSource();
         source.buffer = buffer;
-        source.playbackRate.value = rate;
+        // Left at 1: the audio already comes back at the requested speed, and replaying it faster
+        // or slower here would raise or lower the pitch on top of that.
         source.connect(ctx.destination);
         source.start(startAt);
         if (i === buffers.length - 1) {
@@ -1012,7 +1015,7 @@ export default function Home() {
             try { ctx.close(); } catch {}
           };
         }
-        const seconds = buffer.duration / rate;
+        const seconds = buffer.duration;
         startAt += seconds;
         totalMs += seconds * 1000;
       });
