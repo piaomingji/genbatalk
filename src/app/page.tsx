@@ -665,6 +665,7 @@ export default function Home() {
         });
         engineRef.current = board;
         await board.start();
+        dbg(`sessions open: ${board.isOpen}`);
       }
 
       // Hand the microphone to whichever side pressed the button.
@@ -673,7 +674,7 @@ export default function Home() {
       // Opening the sessions takes a moment. If the user hit stop in the meantime, don't go on to
       // wire up a microphone for a session nobody asked for any more.
       if (!isListeningRef.current) {
-        console.warn('Start was cancelled while connecting; not attaching the microphone.');
+        dbg('start cancelled while connecting; microphone not attached');
         return;
       }
 
@@ -718,10 +719,13 @@ export default function Home() {
         engineRef.current?.sendAudio(e.inputBuffer.getChannelData(0), actx.sampleRate);
       };
 
+      dbg('capture graph attached');
       armCaptureWatchdog(speaker);
     } catch (err: any) {
+      dbg(`start failed: ${err?.code || err?.name || err?.message || 'unknown'}`);
       console.error('Failed to start live translation:', err);
       if (err?.code === 'daily_limit' || err?.message === 'daily_limit') {
+        dbg('the monthly allowance is spent');
         setLimitReached(true);
         setListeningState(false);
         setInterimTranscript('');
