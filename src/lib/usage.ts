@@ -46,6 +46,29 @@ export const DAILY_SESSION_LIMIT = Number(process.env.FREE_SESSIONS_PER_DAY || 2
  */
 export const IP_MULTIPLIER = Number(process.env.FREE_IP_MULTIPLIER || 4);
 
+/**
+ * Accounts that are not metered.
+ *
+ * Verifying the live app costs live allowance, and the person who has to test it most is the one who
+ * can least afford to be locked out of it: a free tier that runs out halfway through diagnosing a
+ * fault stops the very work it exists to protect. Raising the limit for everyone instead would be
+ * worse -- it is exactly the kind of test value that gets left switched on and quietly turns the
+ * free tier into an unmetered bill.
+ *
+ * `OWNER_EMAILS` is a comma-separated list. Unset, nobody is exempt.
+ */
+const OWNER_EMAILS = (process.env.OWNER_EMAILS || '')
+  .split(',')
+  .map(email => email.trim().toLowerCase())
+  .filter(Boolean);
+
+/** Generous rather than infinite: a runaway loop on an owner account should still hit something. */
+export const OWNER_SECONDS_PER_MONTH = Number(process.env.OWNER_SECONDS_PER_MONTH || 360000);
+
+function isOwner(email: string | null | undefined): boolean {
+  return !!email && OWNER_EMAILS.includes(email.toLowerCase());
+}
+
 export const DEVICE_COOKIE = 'talkie_did';
 
 /** Strips an IP down to something usable as a storage key. */
@@ -260,18 +283,27 @@ export async function usageIdentity(
   const device = clientKey(req);
   try {
     const session = await auth();
-    const userId = (session?.user as { id?: string } | undefined)?.id;
+    const user = session?.user as { id?: string; email?: string } | undefined;
+    const userId = user?.id;
     if (userId) {
       const sub = await readSubscription(userId);
       const plan: PlanId = sub?.plan ?? 'free';
+      // An owner counts as paid as well as unmetered: the per-IP ceiling is an anti-abuse measure
+      // for the free tier, and being stopped by it while testing from one connection would defeat
+      // the point of the exemption.
+      const owner = isOwner(user?.email);
       return {
         id: usageIdOf(userId),
         ip: device.ip,
         isNew: false,
         signedIn: true,
-        isPaid: plan !== 'free',
+        isPaid: owner || plan !== 'free',
         plan,
-        allowance: plan === 'free' ? SIGNED_IN_SECONDS_PER_MONTH : PLANS[plan].seconds,
+        allowance: owner
+          ? OWNER_SECONDS_PER_MONTH
+          : plan === 'free'
+            ? SIGNED_IN_SECONDS_PER_MONTH
+            : PLANS[plan].seconds,
       };
     }
   } catch (e) {
