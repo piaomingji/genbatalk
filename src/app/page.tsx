@@ -226,6 +226,29 @@ export default function Home() {
   };
 
   /**
+   * An on-screen log, for problems that only happen on a real phone.
+   *
+   * Three attempts at the microphone-after-a-call fault were made from inference alone and all three
+   * missed, because every state the app can see reports itself healthy while nothing works. Add
+   * `?debug=1` to the address to show what actually happened, in order, on the device where it
+   * happened. Nothing renders without that parameter.
+   */
+  const debugOnRef = useRef<boolean>(false);
+  const [debugLines, setDebugLines] = useState<string[]>([]);
+
+  const dbg = (message: string) => {
+    console.warn(`[talkie] ${message}`);
+    if (!debugOnRef.current) return;
+    const at = new Date().toTimeString().slice(0, 8);
+    setDebugLines(prev => [...prev.slice(-150), `${at}  ${message}`]);
+  };
+
+  useEffect(() => {
+    debugOnRef.current = new URLSearchParams(window.location.search).get('debug') === '1';
+    if (debugOnRef.current) setDebugLines([`${new Date().toTimeString().slice(0, 8)}  debug on`]);
+  }, []);
+
+  /**
    * Returns a usable AudioContext, creating one if we don't have a live one.
    *
    * Two things made the old version fail with "AudioContext not initialized":
@@ -247,6 +270,13 @@ export default function Home() {
       return existing;
     }
     const ctx: AudioContext = new AudioContextClass();
+    // A new context does not always start running. On iOS after an interruption it can arrive
+    // suspended, and a suspended context never fires an audio callback -- the graph builds cleanly
+    // and then simply never produces a sample.
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
+    ctx.addEventListener('statechange', () => {
+      dbg(`audio context -> ${ctx.state}`);
+    });
     audioContextRef.current = ctx;
     return ctx;
   };
@@ -505,13 +535,13 @@ export default function Home() {
       if (audioFramesRef.current !== framesAtStart) return; // audio is flowing; nothing to do
 
       if (rebuiltThisTurnRef.current) {
-        console.error('The capture path produced no audio even after a rebuild.');
+        dbg('watchdog: still no audio after a rebuild; giving up on this turn');
         handleStopListen();
         setNetworkError(`⚠️ ${t.micInterrupted}`);
         setTimeout(() => setNetworkError(null), 6000);
         return;
       }
-      console.warn('No audio arrived after starting a turn; rebuilding the capture path.');
+      dbg('watchdog: no audio arrived; rebuilding the capture path');
       rebuiltThisTurnRef.current = true;
       discardAudioPipeline();
       handleStartListen(speaker);
@@ -537,6 +567,14 @@ export default function Home() {
     // missing unless the user waited for the status text to change.
     const warm = engineRef.current?.isOpen && audioPathIsHealthy();
 
+    const track = audioStreamRef.current?.getAudioTracks()[0];
+    dbg(
+      `press ${speaker}: warm=${!!warm} ws=${engineRef.current?.isOpen ?? 'none'} ` +
+        `ctx=${audioContextRef.current?.state ?? 'none'} ` +
+        `track=${track ? `${track.readyState}${track.muted ? '/muted' : ''}` : 'none'} ` +
+        `frames=${audioFramesRef.current}`
+    );
+
     if (warm) {
       engineRef.current!.setActiveSpeaker(speaker);
       setInterimTranscript(t.listening);
@@ -551,8 +589,10 @@ export default function Home() {
     try {
       let stream = audioStreamRef.current;
       if (!stream) {
+        dbg('requesting a microphone');
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioStreamRef.current = stream;
+        dbg(`microphone granted: ${stream.getAudioTracks()[0]?.readyState}`);
 
         // Nothing reaches the app as an error when a call takes the microphone away, so watch the
         // track itself. A turn that has gone deaf then ends visibly, instead of sitting there
@@ -572,6 +612,7 @@ export default function Home() {
       // them the microphone is handed to. Rebuilding a session per turn is what was eating the
       // first moment of each utterance and resetting context every time the speaker changed.
       if (!engineRef.current || !engineRef.current.isOpen) {
+        dbg('building new translation sessions');
         engineRef.current?.stop();
         const board = new LiveTranslateSwitchboard(staffLang, workerLang, {
           onInterim: ({ original, translated }) => {
@@ -663,6 +704,9 @@ export default function Home() {
       processor.onaudioprocess = (e) => {
         // Counted before anything can return early: this is the proof that the graph is alive.
         audioFramesRef.current++;
+        if (audioFramesRef.current === 1 || audioFramesRef.current % 500 === 0) {
+          dbg(`audio frames: ${audioFramesRef.current}`);
+        }
         rebuiltThisTurnRef.current = false;
 
         if (!isListeningRef.current) return;
@@ -773,6 +817,7 @@ export default function Home() {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         hiddenAt = Date.now();
+        dbg('page hidden');
         return;
       }
       const awayMs = hiddenAt ? Date.now() - hiddenAt : 0;
@@ -780,15 +825,29 @@ export default function Home() {
       // A glance at another app does not break a socket; a call, or a locked screen, can.
       if (awayMs < 1000) return;
 
-      console.warn(`Away for ${Math.round(awayMs / 1000)}s; reconnecting on the next turn.`);
+      dbg(`away ${Math.round(awayMs / 1000)}s -> dropping sessions and audio path`);
       if (isListeningRef.current) handleStopListen();
       engineRef.current?.stop();
       engineRef.current = null;
       discardAudioPipeline();
     };
 
+    // iOS does not always report a call as a visibility change, particularly from a home-screen
+    // launch, so the same recovery hangs off every signal that a return-to-foreground produces.
+    const onReturn = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!hiddenAt) return;
+      onVisibilityChange();
+    };
+
     document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onReturn);
+    window.addEventListener('focus', onReturn);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onReturn);
+      window.removeEventListener('focus', onReturn);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1331,6 +1390,38 @@ export default function Home() {
 
         </div>
       </div>
+
+      {/* Diagnostics, only with ?debug=1 in the address. */}
+      {debugOnRef.current && debugLines.length > 0 && (
+        <div className="absolute inset-x-2 bottom-2 z-50 max-h-[45%] flex flex-col rounded-2xl border border-amber-500/40 bg-slate-950/95 backdrop-blur-md shadow-2xl">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-amber-500/20 shrink-0">
+            <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">
+              diagnostics
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigator.clipboard?.writeText(debugLines.join('\n'))}
+                className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-200"
+              >
+                コピー
+              </button>
+              <button
+                onClick={() => setDebugLines([])}
+                className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-300"
+              >
+                消去
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-0.5">
+            {debugLines.map((line, i) => (
+              <p key={i} className="text-[10px] leading-relaxed font-mono text-slate-300 break-all">
+                {line}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       <SettingsModal
