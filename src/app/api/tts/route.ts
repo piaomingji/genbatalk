@@ -28,8 +28,21 @@ const API_KEY = process.env.GOOGLE_TTS_API_KEY || process.env.GEMINI_API_KEY;
  */
 const VOICE_FAMILIES = ['Chirp3-HD', 'Chirp-HD', 'Neural2', 'Wavenet', 'Standard'];
 
+/**
+ * A chosen voice, carrying the language code it answers to.
+ *
+ * Both halves matter. Google will happily list its Chinese voices when asked about `zh-CN`, then
+ * refuse to speak with one unless the request says `cmn-CN` -- the code the voice itself uses. The
+ * locale we asked with and the locale the voice belongs to are not always the same string, so the
+ * voice's own is what gets sent back.
+ */
+interface ChosenVoice {
+  name: string;
+  languageCode: string;
+}
+
 /** Resolved voice per locale. Serverless instances are reused, so this is asked for once each. */
-const voiceCache = new Map<string, string | null>();
+const voiceCache = new Map<string, ChosenVoice | null>();
 
 /**
  * Picks the best voice a locale actually offers.
@@ -38,7 +51,7 @@ const voiceCache = new Map<string, string | null>();
  * in exactly one language, silently, long after anyone remembers why. Sorted by name so a given
  * language always gets the same voice rather than a different one per server instance.
  */
-async function bestVoiceFor(locale: string): Promise<string | null> {
+async function bestVoiceFor(locale: string): Promise<ChosenVoice | null> {
   if (voiceCache.has(locale)) return voiceCache.get(locale)!;
 
   try {
@@ -48,12 +61,18 @@ async function bestVoiceFor(locale: string): Promise<string | null> {
     if (!res.ok) throw new Error(`voices.list responded ${res.status}`);
 
     const { voices } = (await res.json()) as {
-      voices?: Array<{ name: string; ssmlGender?: string }>;
+      voices?: Array<{ name: string; languageCodes?: string[] }>;
     };
-    const names = (voices || []).map(v => v.name).sort();
+    const available = (voices || []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
-    const chosen =
-      VOICE_FAMILIES.map(family => names.find(name => name.includes(family))).find(Boolean) ?? null;
+    const match =
+      VOICE_FAMILIES.map(family =>
+        available.find(voice => voice.name.includes(family))
+      ).find(Boolean) ?? null;
+
+    const chosen: ChosenVoice | null = match
+      ? { name: match.name, languageCode: match.languageCodes?.[0] || locale }
+      : null;
 
     voiceCache.set(locale, chosen);
     if (!chosen) console.warn(`No Cloud TTS voice for ${locale}; falling back.`);
@@ -132,9 +151,12 @@ export async function GET(req: NextRequest) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               input: { text },
-              // With no name, Google picks a voice for the locale by itself -- usually a plain one,
-              // but better than refusing to speak a language whose voices we could not list.
-              voice: voice ? { languageCode: locale, name: voice } : { languageCode: locale },
+              // The voice's own language code, not the one we searched with. With no voice at all,
+              // Google picks for the locale by itself -- usually a plain one, but better than
+              // refusing to speak a language whose voices we could not list.
+              voice: voice
+                ? { languageCode: voice.languageCode, name: voice.name }
+                : { languageCode: locale },
               audioConfig: { audioEncoding: 'MP3', speakingRate: rate },
             }),
           }
@@ -142,7 +164,7 @@ export async function GET(req: NextRequest) {
 
         if (res.ok) {
           const { audioContent } = (await res.json()) as { audioContent?: string };
-          if (audioContent) return mp3(Buffer.from(audioContent, 'base64'), voice || locale);
+          if (audioContent) return mp3(Buffer.from(audioContent, 'base64'), voice?.name || locale);
           throw new Error('synthesize returned no audio');
         }
 
