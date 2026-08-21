@@ -43,7 +43,7 @@ export default function TokushohoPage() {
                 <span className="block text-[10px] font-bold text-slate-500 mt-0.5">Business name</span>
               </dt>
               <dd className="mt-1 text-slate-400 sm:col-span-2 sm:mt-0 leading-relaxed">
-                Talkie運営事務局<br />
+                Talkie運営事務局（個人事業主）<br />
                 <span className="block text-[10px] text-slate-500 mt-2 leading-relaxed border-t border-slate-800/60 pt-2">Talkie (sole operator). Other details such as address and phone number are disclosed without delay by email on request via the contact form below.</span>
                 <span className="text-[10px] text-slate-500 block mt-1">
                   ※その他事業者情報（所在地・電話番号等）については、以下のお問い合わせ窓口よりご請求いただいた場合、遅滞なく電子メール等で開示いたします。
@@ -58,8 +58,8 @@ export default function TokushohoPage() {
                 <span className="block text-[10px] font-bold text-slate-500 mt-0.5">Representative</span>
               </dt>
               <dd className="mt-1 text-slate-400 sm:col-span-2 sm:mt-0">
-                請求があった場合、遅滞なく電子メール等で開示します。
-                <span className="block text-[10px] text-slate-500 mt-2 leading-relaxed border-t border-slate-800/60 pt-2">Disclosed without delay by email on request.</span>
+                吉澤 友里
+                <span className="block text-[10px] text-slate-500 mt-2 leading-relaxed border-t border-slate-800/60 pt-2">Yuri Yoshizawa</span>
               </dd>
             </div>
 
