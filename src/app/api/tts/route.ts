@@ -76,13 +76,17 @@ async function legacySpeech(text: string, lang: string): Promise<Response> {
   });
 }
 
-function mp3(body: ArrayBuffer | Buffer, source: string) {
+function mp3(body: ArrayBuffer | Buffer, source: string, reason?: string) {
   return new NextResponse(Buffer.from(body as ArrayBuffer), {
     headers: {
       'Content-Type': 'audio/mpeg',
       // The same sentence is often replayed by tapping the speaker icon.
       'Cache-Control': 'public, max-age=86400',
       'X-Speech-Source': source,
+      // Why the good voice was not used, when it was not. Google's refusals name the cause exactly
+      // -- a disabled API, a key from another project, a key restricted to other services -- and
+      // reading it beats guessing between them. It never contains the key itself.
+      ...(reason ? { 'X-Speech-Error': reason.replace(/\s+/g, ' ').slice(0, 200) } : {}),
     },
   });
 }
@@ -114,6 +118,8 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Rate limit exceeded', { status: 429 });
     }
 
+    let refusal: string | undefined;
+
     if (API_KEY) {
       try {
         const locale = speechLocale(lang);
@@ -143,10 +149,19 @@ export async function GET(req: NextRequest) {
         // Worth saying out loud which of the two it is: a key that cannot reach the API at all reads
         // identically to a working one from the outside, because the fallback hides it.
         const detail = await res.text();
-        console.error(`Cloud TTS refused (${res.status}): ${detail.slice(0, 300)}`);
+        // The body is JSON with a human-readable message inside; the message alone is what helps.
+        let message = detail;
+        try {
+          message = JSON.parse(detail)?.error?.message || detail;
+        } catch {}
+        refusal = `${res.status} ${message}`;
+        console.error(`Cloud TTS refused (${res.status}): ${message.slice(0, 300)}`);
       } catch (e) {
+        refusal = e instanceof Error ? e.message : 'request failed';
         console.error('Cloud TTS failed; falling back to the legacy voice:', e);
       }
+    } else {
+      refusal = 'no API key configured';
     }
 
     const legacy = await legacySpeech(text, lang);
@@ -154,7 +169,7 @@ export async function GET(req: NextRequest) {
       // The client falls back to the browser's own voice on any non-OK status.
       return new NextResponse('Speech unavailable', { status: legacy.status });
     }
-    return mp3(await legacy.arrayBuffer(), 'legacy');
+    return mp3(await legacy.arrayBuffer(), 'legacy', refusal);
   } catch (error) {
     console.error('TTS route error:', error);
     return new NextResponse('Internal server error', { status: 500 });

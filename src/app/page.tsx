@@ -997,6 +997,8 @@ export default function Home() {
           // tell a working Cloud TTS key from a missing one by listening.
           if (segment === segments[0]) {
             dbg(`speech source: ${res.headers.get('X-Speech-Source') || 'unknown'}`);
+            const why = res.headers.get('X-Speech-Error');
+            if (why) dbg(`cloud tts refused: ${why}`);
           }
           return ctx.decodeAudioData(await res.arrayBuffer());
         })
