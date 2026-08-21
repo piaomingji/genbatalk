@@ -973,7 +973,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col h-screen max-w-md mx-auto bg-slate-950 text-slate-100 border-x border-slate-900/80 shadow-[0_0_50px_-12px_rgba(99,102,241,0.15)] relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-950/15 via-slate-950 to-slate-950">
+    <div className="flex flex-col h-viewport max-w-md mx-auto bg-slate-950 text-slate-100 border-x border-slate-900/80 shadow-[0_0_50px_-12px_rgba(99,102,241,0.15)] relative overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-950/15 via-slate-950 to-slate-950">
       {/* Top Header */}
       <header className="h-16 shrink-0 flex items-center justify-between px-5 bg-slate-950/80 border-b border-slate-900/60 backdrop-blur-md z-20">
         <div className="flex items-center gap-2.5">

@@ -16,3 +16,20 @@ body {
   color: var(--foreground);
   font-family: var(--font-outfit), system-ui, -apple-system, sans-serif;
 }
+
+/**
+ * The height of the screen as it actually is, not as it would ideally be.
+ *
+ * On a phone `100vh` means the viewport with the browser's address bar hidden -- a height the page
+ * does not have while the bar is showing. A layout sized to it hangs below the fold, which is why
+ * the microphone controls sat off the bottom of the screen on both iOS and Android. `100dvh` tracks
+ * what is visible right now and shrinks when the bars appear.
+ *
+ * The `vh` line is kept first as a fallback for anything that does not understand `dvh`. The build
+ * strips it back out when every browser it targets supports `dvh`, so do not be surprised to find
+ * only one declaration in the compiled stylesheet.
+ */
+.h-viewport {
+  height: 100vh;
+  height: 100dvh;
+}

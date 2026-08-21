@@ -43,7 +43,10 @@ export default function Timeline({ t, messages, onSpeak }: TimelineProps) {
   }, [messages]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+    // min-h-0 is what lets this actually scroll. A flex child defaults to min-height:auto, so
+    // without it the timeline grows to fit every message instead of shrinking, and the controls
+    // below get pushed off the bottom of the screen once a conversation runs long.
+    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
       {messages.length === 0 ? (
         <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-3">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-emerald-500/10 ring-1 ring-white/10 flex items-center justify-center text-slate-400">
