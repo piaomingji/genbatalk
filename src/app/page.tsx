@@ -6,7 +6,7 @@ import Mark from '@/components/Mark';
 import Timeline, { ChatMessage } from '@/components/Timeline';
 import SettingsModal from '@/components/SettingsModal';
 import AudioWave from '@/components/AudioWave';
-import { LiveTranslateSwitchboard, Utterance } from '@/lib/liveTranslate';
+import { LiveTranslateSwitchboard, Utterance, fetchSessionToken } from '@/lib/liveTranslate';
 import { detectUiLang, getStrings, UiLang } from '@/lib/i18n';
 import { LANGUAGES, languageName, normalizeLanguage, speechLocale } from '@/lib/languages';
 import AccountButton from '@/components/AccountButton';
@@ -587,6 +587,16 @@ export default function Home() {
     setInterimTranscript(t.connecting);
 
     try {
+      // The microphone and the translation sessions do not depend on each other, and on a phone
+      // each takes seconds: measured on an iPhone, three for the microphone and four more for the
+      // sessions, one after the other. Asked for together they overlap, and only the slower of the
+      // two is felt.
+      const needsSessions = !engineRef.current || !engineRef.current.isOpen;
+      const tokenPromise = needsSessions ? fetchSessionToken() : null;
+      // Claimed now so a token that fails while the microphone is still being granted does not
+      // surface as an unhandled rejection; the real error is raised where it is awaited below.
+      tokenPromise?.catch(() => {});
+
       let stream = audioStreamRef.current;
       if (!stream) {
         dbg('requesting a microphone');
@@ -611,7 +621,7 @@ export default function Home() {
       // Both directions stay connected for the whole conversation; the button only decides which of
       // them the microphone is handed to. Rebuilding a session per turn is what was eating the
       // first moment of each utterance and resetting context every time the speaker changed.
-      if (!engineRef.current || !engineRef.current.isOpen) {
+      if (needsSessions) {
         dbg('building new translation sessions');
         engineRef.current?.stop();
         const board = new LiveTranslateSwitchboard(staffLang, workerLang, {
@@ -664,11 +674,15 @@ export default function Home() {
           },
         });
         engineRef.current = board;
-        await board.start();
+        await board.start(await tokenPromise!);
         dbg(`sessions open: ${board.isOpen}`);
       }
 
-      // Hand the microphone to whichever side pressed the button.
+      // Hand the microphone to whichever side pressed the button. The sessions were either already
+      // open or were just built above, so this is only reachable with an engine in place -- but say
+      // so out loud rather than assuming it, because a silent skip here would look like the
+      // microphone failing again.
+      if (!engineRef.current) throw new Error('翻訳セッションを開始できませんでした。');
       engineRef.current.setActiveSpeaker(speaker);
 
       // Opening the sessions takes a moment. If the user hit stop in the meantime, don't go on to

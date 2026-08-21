@@ -663,7 +663,7 @@ export class LiveTranslateSwitchboard {
     return this.engines.staff.isOpen && this.engines.worker.isOpen;
   }
 
-  async start(): Promise<void> {
+  async start(prefetchedToken?: string): Promise<void> {
     if (this.starting) return;
     this.starting = true;
     this.disposed = false;
@@ -678,7 +678,10 @@ export class LiveTranslateSwitchboard {
       // Opened at the same time, sharing a single token. Doing this one after the other meant two
       // token requests and two connection handshakes in series before the first word could be
       // spoken -- the whole of it felt like lag on the very first press.
-      const token = await fetchSessionToken();
+      // The caller may already have this in flight, fetched alongside the microphone rather than
+      // after it. On a phone each of those takes seconds, and doing them in series was most of the
+      // wait before the first word could be spoken.
+      const token = prefetchedToken || (await fetchSessionToken());
       await Promise.all([this.engines.staff.start(token), this.engines.worker.start(token)]);
     } catch (e: any) {
       this.onFatal?.(e?.message || '接続に失敗しました。');
