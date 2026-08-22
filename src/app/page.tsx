@@ -142,6 +142,16 @@ export default function Home() {
   const staffLangRef = useRef<string>('en');
   const availableVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
   /**
+   * Whether anything was picked up during the turn that is now ending.
+   *
+   * Pressing stop shows "翻訳しています..." and waits for the translation to land. When the
+   * microphone heard nothing there is nothing on the way, and the message used to sit there for
+   * the full six seconds of the watchdog before clearing itself -- which is exactly what a turn
+   * looks like after an incoming call has quietly killed the audio path. Whether a partial result
+   * ever came back is what tells the two cases apart.
+   */
+  const heardSpeechRef = useRef(false);
+  /**
    * Live mirror of the user's settings.
    *
    * The translation sessions now stay open across a whole conversation, so the callbacks handed to
@@ -577,6 +587,7 @@ export default function Home() {
 
     if (warm) {
       engineRef.current!.setActiveSpeaker(speaker);
+      heardSpeechRef.current = false;
       setInterimTranscript(t.listening);
       reconnectCountRef.current = 0;
       startUsageReporting();
@@ -629,6 +640,9 @@ export default function Home() {
             // Once the user has pressed stop we are showing "翻訳しています..."; late partial
             // results arriving after that should not flash the listening view back up.
             if (!isListeningRef.current) return;
+            // Something came back, so a translation is genuinely on its way and stop can afford
+            // to wait for it.
+            if ((original || translated || '').trim()) heardSpeechRef.current = true;
             setInterimTranscript(translated || original);
           },
           onUtterance: (u) => {
@@ -692,6 +706,7 @@ export default function Home() {
         return;
       }
 
+      heardSpeechRef.current = false;
       setInterimTranscript(t.listening);
       reconnectCountRef.current = 0;
       startUsageReporting();
@@ -1101,15 +1116,27 @@ export default function Home() {
       // down, which both made every turn feel sluggish and cut off translations that were still
       // in flight.
       engineRef.current?.markAudioPause();
+
+      // Wait only for a translation that can actually arrive. Two turns cannot produce one: the
+      // microphone heard nothing, and the sessions are no longer open. Both happen after an
+      // incoming call, and both used to leave "翻訳しています..." on screen until the watchdog
+      // fired -- long after it was clear nothing was coming. End those turns straight away.
+      const translationIsComing = heardSpeechRef.current && (engineRef.current?.isOpen ?? false);
+      if (!translationIsComing) {
+        handleStopListen();
+        return;
+      }
+
       setInterimTranscript(t.translating);
       handleStopListen({ keepStatus: true });
-      // "Translating..." is normally cleared by the arriving translation, but nothing arrives when
-      // the microphone picked up no speech at all -- and the message then sat there forever.
+      // The arriving translation clears this. The watchdog is the backstop for the turn that was
+      // heard but whose translation never lands -- a session dropped mid-flight, say. Four seconds
+      // is long enough for a slow reply to beat it, short enough not to read as the app hanging.
       if (statusWatchdogRef.current) clearTimeout(statusWatchdogRef.current);
       statusWatchdogRef.current = setTimeout(() => {
         statusWatchdogRef.current = null;
         setInterimTranscript(prev => (prev === t.translating ? '' : prev));
-      }, 6000);
+      }, 4000);
       return;
     }
     handleStartListen(speaker);
